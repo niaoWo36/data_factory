@@ -1,0 +1,5 @@
+# Build output
+dist/
+
+# Temp export files (runtime)
+/tmp/data_factory_exports_*/

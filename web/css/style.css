@@ -1,0 +1,72 @@
+/* ── Step nav ────────────────────────────────────────────────── */
+.step-btn {
+  display: flex;
+  align-items: center;
+  gap: .4rem;
+  padding: .4rem 1.2rem;
+  border: none;
+  background: transparent;
+  color: #6c757d;
+  font-size: .875rem;
+  position: relative;
+  cursor: default;
+  white-space: nowrap;
+}
+.step-btn:not([disabled]):not(.active) { cursor: pointer; }
+.step-btn:not([disabled]):not(.active):hover { color: #0d6efd; }
+.step-btn.active { color: #0d6efd; font-weight: 600; }
+.step-btn[disabled] { opacity: .4; }
+
+.step-num {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px; height: 22px;
+  border-radius: 50%;
+  background: #dee2e6;
+  color: #495057;
+  font-size: .75rem;
+  font-weight: 700;
+}
+.step-btn.active .step-num {
+  background: #0d6efd;
+  color: #fff;
+}
+
+/* separator arrows between steps */
+.step-btn:not(:last-child)::after {
+  content: "›";
+  position: absolute;
+  right: -6px;
+  font-size: 1.1rem;
+  color: #ced4da;
+  pointer-events: none;
+}
+
+/* ── Migration log ───────────────────────────────────────────── */
+#migrationLog {
+  font-family: "SFMono-Regular", Menlo, Monaco, Consolas, monospace;
+  font-size: .78rem;
+  line-height: 1.5;
+}
+#migrationLog .log-error { color: #ff6b6b; }
+#migrationLog .log-warn  { color: #ffd43b; }
+#migrationLog .log-ok    { color: #69db7c; }
+#migrationLog .log-info  { color: #74c0fc; }
+
+/* ── Badge states ────────────────────────────────────────────── */
+.badge-pending   { background: #6c757d; }
+.badge-running   { background: #0d6efd; animation: pulse 1s infinite; }
+.badge-done      { background: #198754; }
+.badge-error     { background: #dc3545; }
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: .6; }
+}
+
+/* ── Cards ───────────────────────────────────────────────────── */
+.card-header { font-weight: 600; font-size: .9rem; }
+
+/* ── Form helpers ────────────────────────────────────────────── */
+.form-label { margin-bottom: .2rem; font-size: .875rem; font-weight: 500; }
