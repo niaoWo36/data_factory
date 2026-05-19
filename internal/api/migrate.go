@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"sync/atomic"
 	"time"
@@ -47,6 +48,10 @@ func (s *Server) handleMigrateStart(w http.ResponseWriter, r *http.Request) {
 
 	go s.runMigration(ctx, task, opts)
 
+	log.Printf("migration task %s queued: same_db=%v tenant_ids=%v schema=%v data=%v timeseries=%v src=%s/%s dst=%s/%s",
+		taskID, opts.Config.SameDB, opts.TenantIDs, opts.MigrateSchema, opts.MigrateData, opts.MigrateTimeSeries,
+		opts.Config.SrcMain.DBName, db.SchemaOf(opts.Config.SrcMain),
+		opts.Config.DstMain.DBName, db.SchemaOf(opts.Config.DstMain))
 	writeJSON(w, http.StatusAccepted, map[string]string{"task_id": taskID})
 }
 
@@ -105,6 +110,11 @@ func (s *Server) runMigration(ctx context.Context, task *MigrateTask, opts confi
 	}()
 
 	emit := func(p db.Progress) {
+		if p.Error != "" {
+			log.Printf("migration task %s [%s][%s] error=%s", task.ID, p.Stage, p.Table, p.Error)
+		} else if p.Message != "" {
+			log.Printf("migration task %s [%s][%s] %s", task.ID, p.Stage, p.Table, p.Message)
+		}
 		select {
 		case task.progress <- p:
 		default:
@@ -112,6 +122,7 @@ func (s *Server) runMigration(ctx context.Context, task *MigrateTask, opts confi
 	}
 
 	cfg := opts.Config
+	log.Printf("migration task %s started with tenant_ids=%v", task.ID, opts.TenantIDs)
 
 	// Open connections.
 	srcMain, err := db.OpenSrcMain(cfg)
@@ -191,5 +202,6 @@ func (s *Server) runMigration(ctx context.Context, task *MigrateTask, opts confi
 
 	task.Status = "done"
 	task.Message = "Migration completed successfully"
+	log.Printf("migration task %s completed successfully", task.ID)
 	emit(db.Progress{Stage: "done", Message: task.Message})
 }

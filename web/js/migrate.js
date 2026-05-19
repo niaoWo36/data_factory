@@ -14,6 +14,18 @@ const STAGE_LABELS = {
 
 let wsConn = null;
 
+function getCurrentMigrationTenantIDs() {
+  const selected = document.querySelectorAll('.tenant-cb').length > 0
+    ? Array.from(document.querySelectorAll('.tenant-cb:checked')).map(cb => String(cb.value))
+    : (window.AppState.tenantIDs || []).map(String);
+  if (typeof persistTenantSelection === 'function') {
+    persistTenantSelection(selected);
+  } else {
+    window.AppState.tenantIDs = selected;
+  }
+  return selected;
+}
+
 function setBadge(id, state) {
   const el = document.getElementById(id);
   if (!el) return;
@@ -45,6 +57,7 @@ const STAGE_PCT = { schema: 10, index: 25, fk: 35, data: 65, timeseries: 95, don
 
 function handleProgress(p) {
   const stageName = STAGE_LABELS[p.stage] || p.stage;
+  try { console.info('[migration-progress]', p); } catch (_) {}
 
   // Update badge
   if (p.stage === 'schema' || p.stage === 'index' || p.stage === 'fk') {
@@ -88,6 +101,8 @@ function startMigration(opts) {
   document.getElementById('migrationLog').innerHTML = '';
   ['badgeSchema', 'badgeData', 'badgeTS'].forEach(id => setBadge(id, 'pending'));
   setProgress(0, '连接数据库…');
+  try { console.info('[migration-start]', opts); } catch (_) {}
+  appendLog(`迁移参数: tenants=${(opts.tenant_ids || []).join(', ') || '(all)'}`);
   document.getElementById('btnStopMigration').style.display = 'inline-flex';
   document.getElementById('btnMigrationDone').classList.add('d-none');
   document.getElementById('btnMigrationRetry').classList.add('d-none');
@@ -127,10 +142,12 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('btnStartMigration').addEventListener('click', () => {
     const cfg = window.AppState.config;
     if (!cfg) { alert('请先完成连接配置'); goToStep(1); return; }
+    const tenantIDs = getCurrentMigrationTenantIDs();
+    if (tenantIDs.length === 0) { alert('请至少选择一个租户'); goToStep(2); return; }
 
     const opts = {
       config:               cfg,
-      tenant_ids:           window.AppState.tenantIDs,
+      tenant_ids:           tenantIDs,
       migrate_schema:       document.getElementById('optSchema').checked,
       migrate_data:         document.getElementById('optData').checked,
       migrate_time_series:  document.getElementById('optTS').checked,

@@ -11,11 +11,11 @@ import (
 
 // Progress is emitted during a migration to report status.
 type Progress struct {
-	Stage   string `json:"stage"`   // schema | data | timeseries | fk | index
+	Stage   string `json:"stage"` // schema | data | timeseries | fk | index
 	Table   string `json:"table"`
 	Message string `json:"message"`
-	Done    int    `json:"done"`    // rows / tables processed so far
-	Total   int    `json:"total"`   // total rows / tables (-1 if unknown)
+	Done    int    `json:"done"`  // rows / tables processed so far
+	Total   int    `json:"total"` // total rows / tables (-1 if unknown)
 	Error   string `json:"error,omitempty"`
 }
 
@@ -84,7 +84,7 @@ func MigrateSchema(ctx context.Context, srcDB, dstDB *sql.DB, srcSchema, dstSche
 			skippedTables[info.Name] = true
 			progress(Progress{Stage: "schema", Table: info.Name,
 				Message: fmt.Sprintf("⚠ Skipped table %s: %v", info.Name, err),
-				Done: i + 1, Total: len(infos)})
+				Done:    i + 1, Total: len(infos)})
 			continue
 		}
 		progress(Progress{Stage: "schema", Table: info.Name,
@@ -143,7 +143,7 @@ func MigrateData(ctx context.Context, srcDB, dstDB *sql.DB, srcSchema, dstSchema
 		if SchemaOnlyTables[table] {
 			progress(Progress{Stage: "data", Table: table,
 				Message: fmt.Sprintf("Skipped data for %s (schema-only table)", table),
-				Done: i + 1, Total: len(tables)})
+				Done:    i + 1, Total: len(tables)})
 			continue
 		}
 
@@ -185,16 +185,34 @@ func migrateDataSameDB(ctx context.Context, db *sql.DB, info *TableInfo,
 	dst := fmt.Sprintf("%s.%s", quoteIdent(dstSchema), quoteIdent(info.Name))
 
 	var q string
+	filterMsg := "Copying all rows"
 	if info.HasTenantID && len(tenantIDs) > 0 {
+		filterMsg = fmt.Sprintf("Filtering tenant rows: %v", tenantIDs)
+		progress(Progress{Stage: "data", Table: info.Name, Message: filterMsg})
 		q = fmt.Sprintf(
 			`INSERT INTO %s (%s) SELECT %s FROM %s WHERE tenant_id::text = ANY($1::text[]) ON CONFLICT DO NOTHING`,
 			dst, colList, colList, src)
-		_, err := db.ExecContext(ctx, q, pq.Array(tenantIDs))
+		res, err := db.ExecContext(ctx, q, pq.Array(tenantIDs))
+		if err != nil {
+			return err
+		}
+		if rows, rowsErr := res.RowsAffected(); rowsErr == nil {
+			progress(Progress{Stage: "data", Table: info.Name,
+				Message: fmt.Sprintf("Inserted %d rows total", rows), Done: int(rows), Total: int(rows)})
+		}
+		return nil
+	}
+	progress(Progress{Stage: "data", Table: info.Name, Message: filterMsg})
+	q = fmt.Sprintf(`INSERT INTO %s (%s) SELECT %s FROM %s ON CONFLICT DO NOTHING`, dst, colList, colList, src)
+	res, err := db.ExecContext(ctx, q)
+	if err != nil {
 		return err
 	}
-	q = fmt.Sprintf(`INSERT INTO %s (%s) SELECT %s FROM %s ON CONFLICT DO NOTHING`, dst, colList, colList, src)
-	_, err := db.ExecContext(ctx, q)
-	return err
+	if rows, rowsErr := res.RowsAffected(); rowsErr == nil {
+		progress(Progress{Stage: "data", Table: info.Name,
+			Message: fmt.Sprintf("Inserted %d rows total", rows), Done: int(rows), Total: int(rows)})
+	}
+	return nil
 }
 
 // migrateDataCrossDB uses server-side cursors and batched inserts to move data
@@ -208,9 +226,12 @@ func migrateDataCrossDB(ctx context.Context, srcDB, dstDB *sql.DB, info *TableIn
 	var selectQ string
 	var args []interface{}
 	if info.HasTenantID && len(tenantIDs) > 0 {
+		progress(Progress{Stage: "data", Table: info.Name,
+			Message: fmt.Sprintf("Filtering tenant rows: %v", tenantIDs)})
 		selectQ = fmt.Sprintf(`SELECT %s FROM %s WHERE tenant_id::text = ANY($1::text[])`, colList, src)
 		args = []interface{}{pq.Array(tenantIDs)}
 	} else {
+		progress(Progress{Stage: "data", Table: info.Name, Message: "Copying all rows"})
 		selectQ = fmt.Sprintf(`SELECT %s FROM %s`, colList, src)
 	}
 
@@ -230,6 +251,7 @@ func migrateDataCrossDB(ctx context.Context, srcDB, dstDB *sql.DB, info *TableIn
 	insertQ := fmt.Sprintf(`INSERT INTO %s (%s) VALUES (%s) ON CONFLICT DO NOTHING`, dst, colList, placeholders)
 
 	var rowBuf [][]interface{}
+	insertedTotal := 0
 	flush := func() error {
 		tx, err := dstDB.BeginTx(ctx, nil)
 		if err != nil {
@@ -242,9 +264,13 @@ func migrateDataCrossDB(ctx context.Context, srcDB, dstDB *sql.DB, info *TableIn
 		}
 		defer stmt.Close()
 		for _, row := range rowBuf {
-			if _, err := stmt.ExecContext(ctx, row...); err != nil {
+			res, err := stmt.ExecContext(ctx, row...)
+			if err != nil {
 				tx.Rollback()
 				return fmt.Errorf("insert into %s: %w", info.Name, err)
+			}
+			if affected, rowsErr := res.RowsAffected(); rowsErr == nil {
+				insertedTotal += int(affected)
 			}
 		}
 		rowBuf = rowBuf[:0]
@@ -271,7 +297,7 @@ func migrateDataCrossDB(ctx context.Context, srcDB, dstDB *sql.DB, info *TableIn
 				return err
 			}
 			progress(Progress{Stage: "data", Table: info.Name,
-				Message: fmt.Sprintf("Inserted %d rows", total), Done: total, Total: -1})
+				Message: fmt.Sprintf("Scanned %d rows, inserted %d rows", total, insertedTotal), Done: total, Total: -1})
 		}
 	}
 	if err := rows.Err(); err != nil {
@@ -283,7 +309,7 @@ func migrateDataCrossDB(ctx context.Context, srcDB, dstDB *sql.DB, info *TableIn
 		}
 	}
 	progress(Progress{Stage: "data", Table: info.Name,
-		Message: fmt.Sprintf("Inserted %d rows total", total), Done: total, Total: total})
+		Message: fmt.Sprintf("Scanned %d rows total, inserted %d rows total", total, insertedTotal), Done: total, Total: total})
 	return nil
 }
 
@@ -337,4 +363,3 @@ func syncExtensions(ctx context.Context, srcDB, dstDB *sql.DB) []string {
 	}
 	return failed
 }
-
