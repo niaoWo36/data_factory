@@ -22,23 +22,27 @@ type Server struct {
 	tasks   sync.Map // taskID -> *MigrateTask
 	exports sync.Map // exportID -> filePath
 
-	exportDir string // temp directory for exported SQL files
+	exportDir  string // temp directory for exported SQL files
+	configFile string // path to persisted config JSON file
 
 	upgrader websocket.Upgrader
 }
 
-// NewServer initialises a Server with a temp dir for exports.
-func NewServer() (*Server, error) {
+// NewServer initialises a Server with a temp dir for exports and loads any saved config.
+func NewServer(configFile string) (*Server, error) {
 	dir, err := os.MkdirTemp("", "data_factory_exports_*")
 	if err != nil {
 		return nil, err
 	}
-	return &Server{
-		exportDir: dir,
+	srv := &Server{
+		exportDir:  dir,
+		configFile: configFile,
 		upgrader: websocket.Upgrader{
 			CheckOrigin: func(r *http.Request) bool { return true },
 		},
-	}, nil
+	}
+	srv.loadConfigFromFile()
+	return srv, nil
 }
 
 // RegisterRoutes wires all API endpoints onto router r.
@@ -48,6 +52,7 @@ func (s *Server) RegisterRoutes(r *mux.Router) {
 	// Connection / config
 	api.HandleFunc("/config/test-connection", s.handleTestConnection).Methods(http.MethodPost, http.MethodOptions)
 	api.HandleFunc("/config/save", s.handleSaveConfig).Methods(http.MethodPost, http.MethodOptions)
+	api.HandleFunc("/config/load", s.handleLoadConfig).Methods(http.MethodGet, http.MethodOptions)
 
 	// Tenants
 	api.HandleFunc("/tenants", s.handleListTenants).Methods(http.MethodGet, http.MethodOptions)

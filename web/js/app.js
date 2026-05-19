@@ -18,6 +18,8 @@ function goToStep(n) {
     const s = parseInt(btn.dataset.step, 10);
     btn.classList.toggle('active', s === n);
   });
+
+  try { localStorage.setItem('df_step', n); } catch (_) {}
 }
 
 // Wire step buttons and data-go-step buttons.

@@ -69,20 +69,21 @@ func OpenDstMain(cfg config.AppConfig) (*sql.DB, error) {
 }
 
 // OpenDstTS opens the destination time-series database connection.
+// DstTS always shares the same server/credentials as DstMain; only the schema differs.
 func OpenDstTS(cfg config.AppConfig) (*sql.DB, error) {
+	var baseCfg config.DBConfig
 	if cfg.SameDB {
-		dstCfg := cfg.SrcMain
-		dstCfg.Schema = cfg.DstTS.Schema
-		if dstCfg.Schema == "" {
-			dstCfg.Schema = "public"
-		}
-		return Open(dstCfg)
+		// SameDB: DstMain is the same instance as SrcMain
+		baseCfg = cfg.SrcMain
+	} else {
+		// Different server: use DstMain connection, substitute TS schema
+		baseCfg = cfg.DstMain
 	}
-	tsCfg := cfg.DstTS
-	if tsCfg.DBName == "" {
-		tsCfg.DBName = cfg.DstMain.DBName
+	baseCfg.Schema = cfg.DstTS.Schema
+	if baseCfg.Schema == "" {
+		baseCfg.Schema = "public"
 	}
-	return Open(tsCfg)
+	return Open(baseCfg)
 }
 
 // SchemaOf returns the effective schema name for a DBConfig.

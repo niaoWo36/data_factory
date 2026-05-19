@@ -23,8 +23,9 @@ var (
 var webFS embed.FS
 
 func main() {
-	port    := flag.String("port", "8080", "HTTP server port")
-	version := flag.Bool("version", false, "Print version and exit")
+	port       := flag.String("port", "8080", "HTTP server port")
+	configFile := flag.String("config", "data_factory.json", "Path to persisted config file")
+	version    := flag.Bool("version", false, "Print version and exit")
 	flag.Parse()
 
 	if *version {
@@ -32,7 +33,7 @@ func main() {
 		return
 	}
 
-	srv, err := api.NewServer()
+	srv, err := api.NewServer(*configFile)
 	if err != nil {
 		log.Fatalf("init server: %v", err)
 	}

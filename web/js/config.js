@@ -2,6 +2,9 @@
  * config.js – Step 1: connection configuration forms
  */
 
+const LS_CONFIG_KEY = 'df_config';
+const LS_SAMEDB_KEY = 'df_same_db';
+
 // ── Form builder ──────────────────────────────────────────────
 function dbFormHTML(id, { showFull = true, schemaOnly = false } = {}) {
   if (schemaOnly) {
@@ -61,8 +64,9 @@ function readDBConfig(id, schemaOnly = false) {
 
 // ── Populate forms ─────────────────────────────────────────────
 function populateDB(id, cfg) {
+  if (!cfg) return;
   const set = (k, v) => { const el = document.getElementById(`${id}_${k}`); if (el) el.value = v || ''; };
-  set('host', cfg.host); set('port', cfg.port); set('dbname', cfg.dbname);
+  set('host', cfg.host); set('port', cfg.port || 5432); set('dbname', cfg.dbname);
   set('user', cfg.user); set('password', cfg.password); set('schema', cfg.schema);
 }
 
@@ -73,26 +77,33 @@ function renderForms(sameDB) {
   document.getElementById('dstMainForm').innerHTML = sameDB
     ? dbFormHTML('dstMain', { showFull: false, schemaOnly: true })
     : dbFormHTML('dstMain');
-  document.getElementById('dstTSForm').innerHTML   = sameDB
-    ? dbFormHTML('dstTS', { showFull: false, schemaOnly: true })
-    : dbFormHTML('dstTS');
+  // DstTS always shares the same server as DstMain — only schema differs.
+  document.getElementById('dstTSForm').innerHTML = dbFormHTML('dstTS', { showFull: false, schemaOnly: true });
 
   // Restore previously entered values.
-  if (window.AppState.config) {
-    const c = window.AppState.config;
+  const c = window.AppState.config;
+  if (c) {
     populateDB('srcMain', c.src_main);
     if (!sameDB) { populateDB('dstMain', c.dst_main); }
-    else { const el = document.getElementById('dstMain_schema'); if (el) el.value = c.dst_main.schema || 'public'; }
-    const srcTSEl = document.getElementById('srcTS_schema'); if (srcTSEl) srcTSEl.value = c.src_ts.schema || '';
-    const dstTSEl = document.getElementById('dstTS_schema'); if (dstTSEl) dstTSEl.value = c.dst_ts.schema || '';
+    else {
+      const el = document.getElementById('dstMain_schema');
+      if (el) el.value = (c.dst_main && c.dst_main.schema) || 'public';
+    }
+    const srcTSEl = document.getElementById('srcTS_schema');
+    if (srcTSEl) srcTSEl.value = (c.src_ts && c.src_ts.schema) || '';
+    const dstTSEl = document.getElementById('dstTS_schema');
+    if (dstTSEl) dstTSEl.value = (c.dst_ts && c.dst_ts.schema) || '';
   }
+
+  // Attach auto-save listeners after rendering
+  attachAutoSave();
 }
 
 // ── Build config object from forms ────────────────────────────
 function buildConfig() {
-  const sameDB = document.getElementById('sameDbSwitch').checked;
-  const srcTS  = readDBConfig('srcTS', true);
-  const dstTS  = readDBConfig('dstTS', true);
+  const sameDB  = document.getElementById('sameDbSwitch').checked;
+  const srcTS   = readDBConfig('srcTS', true);
+  const dstTS   = readDBConfig('dstTS', true); // always schema-only
   const srcMain = readDBConfig('srcMain');
 
   let dstMain;
@@ -111,6 +122,22 @@ function buildConfig() {
   };
 }
 
+// ── Auto-save form to localStorage ────────────────────────────
+function saveConfigToLocal() {
+  try {
+    const cfg = buildConfig();
+    localStorage.setItem(LS_CONFIG_KEY, JSON.stringify(cfg));
+    localStorage.setItem(LS_SAMEDB_KEY, document.getElementById('sameDbSwitch').checked ? '1' : '0');
+  } catch (_) {}
+}
+
+function attachAutoSave() {
+  document.querySelectorAll('#step1 input').forEach(el => {
+    el.addEventListener('input', saveConfigToLocal);
+    el.addEventListener('change', saveConfigToLocal);
+  });
+}
+
 // ── Test connection results ────────────────────────────────────
 function renderTestResult(data) {
   const items = [
@@ -125,7 +152,7 @@ function renderTestResult(data) {
     const ok = data[key].ok;
     const err = data[key].error || '';
     html += `<span class="badge ${ok ? 'bg-success' : 'bg-danger'}" title="${err}">
-      ${ok ? '✓' : '✗'} ${label}
+      ${ok ? '✓' : '✗'} ${label}${err ? ' — ' + err : ''}
     </span>`;
   }
   if (data.same_db) {
@@ -136,12 +163,48 @@ function renderTestResult(data) {
 }
 
 // ── Init ───────────────────────────────────────────────────────
-document.addEventListener('DOMContentLoaded', () => {
-  renderForms(false);
+document.addEventListener('DOMContentLoaded', async () => {
+  // Try to load saved config: first from server, then from localStorage.
+  let savedCfg = null;
+
+  try {
+    const resp = await apiGet('/api/config/load');
+    if (resp.ok && resp.config) {
+      savedCfg = resp.config;
+    }
+  } catch (_) {}
+
+  if (!savedCfg) {
+    try {
+      const raw = localStorage.getItem(LS_CONFIG_KEY);
+      if (raw) savedCfg = JSON.parse(raw);
+    } catch (_) {}
+  }
+
+  if (savedCfg) {
+    window.AppState.config = savedCfg;
+  }
+
+  const savedSameDB = savedCfg ? !!savedCfg.same_db : (localStorage.getItem(LS_SAMEDB_KEY) === '1');
+  const sameSwitch = document.getElementById('sameDbSwitch');
+  sameSwitch.checked = savedSameDB;
+
+  renderForms(savedSameDB);
+
+  // If we have a saved config, unlock steps and restore last step
+  if (savedCfg) {
+    unlockStep(2); unlockStep(3); unlockStep(4); unlockStep(5);
+    const lastStep = parseInt(localStorage.getItem('df_step') || '1', 10);
+    if (lastStep > 1) {
+      goToStep(lastStep);
+      if (lastStep >= 2) loadTenants();
+    }
+  }
 
   // Same-DB toggle
-  document.getElementById('sameDbSwitch').addEventListener('change', function () {
+  sameSwitch.addEventListener('change', function () {
     renderForms(this.checked);
+    saveConfigToLocal();
   });
 
   // Test connection
@@ -179,7 +242,8 @@ document.addEventListener('DOMContentLoaded', () => {
       }
       cfg.same_db = data.same_db;
       window.AppState.config = cfg;
-      unlockStep(2);
+      localStorage.setItem(LS_CONFIG_KEY, JSON.stringify(cfg));
+      unlockStep(2); unlockStep(3); unlockStep(4); unlockStep(5);
       goToStep(2);
       loadTenants();
     } catch (e) {
@@ -189,3 +253,4 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   });
 });
+
