@@ -36,6 +36,16 @@ func MigrateSchema(ctx context.Context, srcDB, dstDB *sql.DB, srcSchema, dstSche
 		return fmt.Errorf("create schema: %w", err)
 	}
 
+	// Sync PostgreSQL extensions (e.g. pgvector, postgis) from source to target.
+	// Failures are non-fatal – we warn and tables that depend on missing extensions
+	// will be skipped below rather than aborting the whole migration.
+	skippedExts := syncExtensions(ctx, srcDB, dstDB)
+	if len(skippedExts) > 0 {
+		progress(Progress{Stage: "schema",
+			Message: fmt.Sprintf("⚠ Extensions not available on target (tables using their types will be skipped): %s",
+				strings.Join(skippedExts, ", "))})
+	}
+
 	// Create sequences first so that column defaults (nextval) resolve correctly.
 	seqs, err := ListSequences(srcDB, srcSchema)
 	if err != nil {
@@ -60,21 +70,30 @@ func MigrateSchema(ctx context.Context, srcDB, dstDB *sql.DB, srcSchema, dstSche
 		infos = append(infos, info)
 	}
 
-	// Create tables (without FKs).
+	// Create tables (without FKs). Failures are non-fatal: warn and skip so that
+	// a missing extension (e.g. pgvector) does not abort the entire migration.
+	skippedTables := make(map[string]bool)
 	for i, info := range infos {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
 		ddl := CreateTableDDL(info, dstSchema)
 		if _, err := dstDB.ExecContext(ctx, ddl); err != nil {
-			return fmt.Errorf("create table %s: %w\nDDL: %s", info.Name, err, ddl)
+			skippedTables[info.Name] = true
+			progress(Progress{Stage: "schema", Table: info.Name,
+				Message: fmt.Sprintf("⚠ Skipped table %s: %v", info.Name, err),
+				Done: i + 1, Total: len(infos)})
+			continue
 		}
 		progress(Progress{Stage: "schema", Table: info.Name,
 			Message: fmt.Sprintf("Created table %s", info.Name), Done: i + 1, Total: len(infos)})
 	}
 
-	// Create indexes.
+	// Create indexes (skip tables that failed above).
 	for _, info := range infos {
+		if skippedTables[info.Name] {
+			continue
+		}
 		for _, stmt := range IndexDDL(info, srcSchema, dstSchema) {
 			if _, err := dstDB.ExecContext(ctx, stmt); err != nil {
 				// Non-fatal: log and continue.
@@ -84,8 +103,11 @@ func MigrateSchema(ctx context.Context, srcDB, dstDB *sql.DB, srcSchema, dstSche
 		}
 	}
 
-	// Add foreign keys last.
+	// Add foreign keys last (skip tables that failed above).
 	for _, info := range infos {
+		if skippedTables[info.Name] {
+			continue
+		}
 		for _, stmt := range ForeignKeyDDL(info, srcSchema, dstSchema) {
 			if _, err := dstDB.ExecContext(ctx, stmt); err != nil {
 				progress(Progress{Stage: "fk", Table: info.Name,
@@ -116,17 +138,21 @@ func MigrateData(ctx context.Context, srcDB, dstDB *sql.DB, srcSchema, dstSchema
 		}
 		info, err := IntrospectTable(srcDB, srcSchema, table)
 		if err != nil {
-			return fmt.Errorf("introspect %s: %w", table, err)
+			progress(Progress{Stage: "data", Table: table,
+				Message: fmt.Sprintf("⚠ Skipped (introspect failed): %v", err), Done: i + 1, Total: len(tables)})
+			continue
 		}
 
+		var dataErr error
 		if sameDB {
-			if err := migrateDataSameDB(ctx, srcDB, info, srcSchema, dstSchema, tenantIDs, progress); err != nil {
-				return err
-			}
+			dataErr = migrateDataSameDB(ctx, srcDB, info, srcSchema, dstSchema, tenantIDs, progress)
 		} else {
-			if err := migrateDataCrossDB(ctx, srcDB, dstDB, info, srcSchema, dstSchema, tenantIDs, progress); err != nil {
-				return err
-			}
+			dataErr = migrateDataCrossDB(ctx, srcDB, dstDB, info, srcSchema, dstSchema, tenantIDs, progress)
+		}
+		if dataErr != nil {
+			progress(Progress{Stage: "data", Table: table,
+				Message: fmt.Sprintf("⚠ Skipped data for %s: %v", table, dataErr), Done: i + 1, Total: len(tables)})
+			continue
 		}
 		progress(Progress{Stage: "data", Table: table,
 			Message: fmt.Sprintf("Table %s done", table), Done: i + 1, Total: len(tables)})
@@ -274,3 +300,31 @@ func pqArray(ss []string) interface{} {
 	}
 	return "{" + strings.Join(escaped, ",") + "}"
 }
+
+// syncExtensions tries to install on dstDB every extension that is installed on
+// srcDB. plpgsql is always present and skipped. Returns the names of any
+// extensions that could not be created (e.g. not installed at the OS level).
+func syncExtensions(ctx context.Context, srcDB, dstDB *sql.DB) []string {
+	rows, err := srcDB.QueryContext(ctx, `SELECT extname FROM pg_extension ORDER BY extname`)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+
+	var failed []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			continue
+		}
+		if name == "plpgsql" {
+			continue // always present, skip
+		}
+		stmt := fmt.Sprintf(`CREATE EXTENSION IF NOT EXISTS %s CASCADE`, quoteIdent(name))
+		if _, err := dstDB.ExecContext(ctx, stmt); err != nil {
+			failed = append(failed, name)
+		}
+	}
+	return failed
+}
+

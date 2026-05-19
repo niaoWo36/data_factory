@@ -82,6 +82,26 @@ func writeMainDDL(sb *strings.Builder, srcDB *sql.DB, srcSchema, dstSchema strin
 	sb.WriteString("-- ---------------------------------------------------------------\n\n")
 	sb.WriteString(fmt.Sprintf("CREATE SCHEMA IF NOT EXISTS %s;\n\n", quoteIdent(dstSchema)))
 
+	// Extensions (e.g. pgvector). Errors are non-fatal at restore time.
+	extRows, err := srcDB.Query(`SELECT extname FROM pg_extension WHERE extname <> 'plpgsql' ORDER BY extname`)
+	if err == nil {
+		defer extRows.Close()
+		var exts []string
+		for extRows.Next() {
+			var n string
+			if extRows.Scan(&n) == nil {
+				exts = append(exts, n)
+			}
+		}
+		if len(exts) > 0 {
+			sb.WriteString("-- Extensions\n")
+			for _, e := range exts {
+				sb.WriteString(fmt.Sprintf("CREATE EXTENSION IF NOT EXISTS %s CASCADE;\n", quoteIdent(e)))
+			}
+			sb.WriteString("\n")
+		}
+	}
+
 	// Sequences (must come before tables that reference them in DEFAULT clauses).
 	seqs, err := db.ListSequences(srcDB, srcSchema)
 	if err != nil {
