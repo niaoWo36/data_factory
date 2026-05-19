@@ -3,10 +3,83 @@ package db
 import (
 	"database/sql"
 	"fmt"
+	"regexp"
 	"strings"
 )
 
-// Column describes a single column in a table.
+// Sequence holds introspected metadata for a PostgreSQL sequence.
+type Sequence struct {
+	Name      string
+	DataType  string
+	Start     int64
+	Increment int64
+	Min       int64
+	Max       int64
+	Cycle     bool
+}
+
+// ListSequences returns all sequences defined in the given schema.
+func ListSequences(conn *sql.DB, schema string) ([]Sequence, error) {
+	rows, err := conn.Query(`
+		SELECT sequence_name, data_type,
+		       start_value::bigint, increment::bigint,
+		       minimum_value::bigint, maximum_value::bigint,
+		       cycle_option
+		FROM information_schema.sequences
+		WHERE sequence_schema = $1
+		ORDER BY sequence_name`, schema)
+	if err != nil {
+		return nil, fmt.Errorf("list sequences: %w", err)
+	}
+	defer rows.Close()
+	var seqs []Sequence
+	for rows.Next() {
+		var s Sequence
+		var cycle string
+		if err := rows.Scan(&s.Name, &s.DataType, &s.Start, &s.Increment, &s.Min, &s.Max, &cycle); err != nil {
+			return nil, err
+		}
+		s.Cycle = cycle == "YES"
+		seqs = append(seqs, s)
+	}
+	return seqs, rows.Err()
+}
+
+// CreateSequenceDDL generates a CREATE SEQUENCE IF NOT EXISTS statement for the
+// given sequence, placing it in dstSchema.
+func CreateSequenceDDL(seq Sequence, dstSchema string) string {
+	cycle := "NO CYCLE"
+	if seq.Cycle {
+		cycle = "CYCLE"
+	}
+	return fmt.Sprintf(
+		`CREATE SEQUENCE IF NOT EXISTS %s.%s AS %s START %d INCREMENT %d MINVALUE %d MAXVALUE %d %s;`,
+		quoteIdent(dstSchema), quoteIdent(seq.Name),
+		seq.DataType,
+		seq.Start, seq.Increment, seq.Min, seq.Max, cycle,
+	)
+}
+
+// nextvalRe matches nextval('...') expressions in column defaults.
+var nextvalRe = regexp.MustCompile(`nextval\('([^']+)'::regclass\)`)
+
+// rewriteNextval rewrites nextval(...) expressions so they reference the sequence
+// inside dstSchema rather than whatever schema was used in the source.
+func rewriteNextval(val, dstSchema string) string {
+	return nextvalRe.ReplaceAllStringFunc(val, func(match string) string {
+		sub := nextvalRe.FindStringSubmatch(match)
+		if len(sub) < 2 {
+			return match
+		}
+		// Extract the bare sequence name – strip any existing schema prefix and quotes.
+		seqRef := sub[1]
+		parts := strings.Split(seqRef, ".")
+		seqName := strings.Trim(parts[len(parts)-1], `"`)
+		return fmt.Sprintf("nextval('%s.%s'::regclass)", quoteIdent(dstSchema), quoteIdent(seqName))
+	})
+}
+
+
 type Column struct {
 	Name       string
 	DataType   string
@@ -181,8 +254,9 @@ func CreateTableDDL(info *TableInfo, targetSchema string) string {
 			sb.WriteString(" NOT NULL")
 		}
 		if c.Default.Valid {
-			sb.WriteString(fmt.Sprintf(" DEFAULT %s", c.Default.String))
-		}
+				def := rewriteNextval(c.Default.String, targetSchema)
+				sb.WriteString(fmt.Sprintf(" DEFAULT %s", def))
+			}
 		if i < len(info.Columns)-1 || hasNonFKConstraints(info) {
 			sb.WriteString(",")
 		}

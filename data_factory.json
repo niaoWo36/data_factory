@@ -1,0 +1,39 @@
+{
+  "src_main": {
+    "host": "192.168.0.188",
+    "port": 5432,
+    "dbname": "ruoyi",
+    "user": "postgres",
+    "password": "p1ssw0rd",
+    "schema": "business",
+    "sslmode": ""
+  },
+  "src_ts": {
+    "host": "",
+    "port": 0,
+    "dbname": "",
+    "user": "",
+    "password": "",
+    "schema": "public",
+    "sslmode": ""
+  },
+  "dst_main": {
+    "host": "192.168.0.188",
+    "port": 5432,
+    "dbname": "test",
+    "user": "postgres",
+    "password": "p1ssw0rd",
+    "schema": "business",
+    "sslmode": ""
+  },
+  "dst_ts": {
+    "host": "",
+    "port": 0,
+    "dbname": "",
+    "user": "",
+    "password": "",
+    "schema": "public",
+    "sslmode": ""
+  },
+  "same_db": false
+}

@@ -36,6 +36,21 @@ func MigrateSchema(ctx context.Context, srcDB, dstDB *sql.DB, srcSchema, dstSche
 		return fmt.Errorf("create schema: %w", err)
 	}
 
+	// Create sequences first so that column defaults (nextval) resolve correctly.
+	seqs, err := ListSequences(srcDB, srcSchema)
+	if err != nil {
+		return fmt.Errorf("list sequences: %w", err)
+	}
+	for _, seq := range seqs {
+		ddl := CreateSequenceDDL(seq, dstSchema)
+		if _, err := dstDB.ExecContext(ctx, ddl); err != nil {
+			return fmt.Errorf("create sequence %s: %w", seq.Name, err)
+		}
+	}
+	if len(seqs) > 0 {
+		progress(Progress{Stage: "schema", Message: fmt.Sprintf("Created %d sequences", len(seqs))})
+	}
+
 	infos := make([]*TableInfo, 0, len(tables))
 	for _, t := range tables {
 		info, err := IntrospectTable(srcDB, srcSchema, t)

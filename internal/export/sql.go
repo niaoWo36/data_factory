@@ -82,6 +82,20 @@ func writeMainDDL(sb *strings.Builder, srcDB *sql.DB, srcSchema, dstSchema strin
 	sb.WriteString("-- ---------------------------------------------------------------\n\n")
 	sb.WriteString(fmt.Sprintf("CREATE SCHEMA IF NOT EXISTS %s;\n\n", quoteIdent(dstSchema)))
 
+	// Sequences (must come before tables that reference them in DEFAULT clauses).
+	seqs, err := db.ListSequences(srcDB, srcSchema)
+	if err != nil {
+		return fmt.Errorf("list sequences: %w", err)
+	}
+	if len(seqs) > 0 {
+		sb.WriteString("-- Sequences\n")
+		for _, seq := range seqs {
+			sb.WriteString(db.CreateSequenceDDL(seq, dstSchema))
+			sb.WriteString("\n")
+		}
+		sb.WriteString("\n")
+	}
+
 	tables, err := db.ListTables(srcDB, srcSchema)
 	if err != nil {
 		return err
