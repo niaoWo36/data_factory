@@ -72,30 +72,39 @@ function populateDB(id, cfg) {
 
 // ── Render forms ───────────────────────────────────────────────
 function renderForms(sameDB) {
-  document.getElementById('srcMainForm').innerHTML = dbFormHTML('srcMain');
-  document.getElementById('srcTSForm').innerHTML   = dbFormHTML('srcTS', { showFull: false, schemaOnly: true });
+  const isFirstRender = !document.getElementById('srcMain_host');
+
+  if (isFirstRender) {
+    // Build stable forms only once — they never change regardless of sameDB
+    document.getElementById('srcMainForm').innerHTML = dbFormHTML('srcMain');
+    document.getElementById('srcTSForm').innerHTML   = dbFormHTML('srcTS', { showFull: false, schemaOnly: true });
+    document.getElementById('dstTSForm').innerHTML   = dbFormHTML('dstTS', { showFull: false, schemaOnly: true });
+  }
+
+  // dstMainForm changes when sameDB toggles
   document.getElementById('dstMainForm').innerHTML = sameDB
     ? dbFormHTML('dstMain', { showFull: false, schemaOnly: true })
     : dbFormHTML('dstMain');
-  // DstTS always shares the same server as DstMain — only schema differs.
-  document.getElementById('dstTSForm').innerHTML = dbFormHTML('dstTS', { showFull: false, schemaOnly: true });
 
-  // Restore previously entered values.
+  // Restore values from AppState (already snapshotted before this call on toggle,
+  // or loaded from server/localStorage on initial render)
   const c = window.AppState.config;
   if (c) {
-    populateDB('srcMain', c.src_main);
-    if (!sameDB) { populateDB('dstMain', c.dst_main); }
-    else {
+    if (isFirstRender) {
+      populateDB('srcMain', c.src_main);
+      const srcTSEl = document.getElementById('srcTS_schema');
+      if (srcTSEl) srcTSEl.value = (c.src_ts && c.src_ts.schema) || '';
+      const dstTSEl = document.getElementById('dstTS_schema');
+      if (dstTSEl) dstTSEl.value = (c.dst_ts && c.dst_ts.schema) || '';
+    }
+    if (!sameDB) {
+      populateDB('dstMain', c.dst_main);
+    } else {
       const el = document.getElementById('dstMain_schema');
       if (el) el.value = (c.dst_main && c.dst_main.schema) || 'public';
     }
-    const srcTSEl = document.getElementById('srcTS_schema');
-    if (srcTSEl) srcTSEl.value = (c.src_ts && c.src_ts.schema) || '';
-    const dstTSEl = document.getElementById('dstTS_schema');
-    if (dstTSEl) dstTSEl.value = (c.dst_ts && c.dst_ts.schema) || '';
   }
 
-  // Attach auto-save listeners after rendering
   attachAutoSave();
 }
 
@@ -201,10 +210,20 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
   }
 
-  // Same-DB toggle
+  // Same-DB toggle — snapshot current values first so they survive the re-render
   sameSwitch.addEventListener('change', function () {
+    const prevSameDB = !this.checked; // the layout BEFORE this toggle
+    const snap = {
+      src_main: readDBConfig('srcMain'),
+      src_ts:   readDBConfig('srcTS', true),
+      // read dstMain in its CURRENT layout (full or schema-only)
+      dst_main: readDBConfig('dstMain', prevSameDB),
+      dst_ts:   readDBConfig('dstTS', true),
+      same_db:  this.checked,
+    };
+    window.AppState.config = snap;
+    try { localStorage.setItem(LS_CONFIG_KEY, JSON.stringify(snap)); } catch (_) {}
     renderForms(this.checked);
-    saveConfigToLocal();
   });
 
   // Test connection
