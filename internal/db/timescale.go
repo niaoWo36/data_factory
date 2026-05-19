@@ -31,23 +31,25 @@ func InitTimescaleDB(ctx context.Context, db *sql.DB, schema string) error {
 
 // GetTSTables queries the thing_product table in the main database to find
 // the iot_table values (time-series table names) for the given tenant IDs.
+// The cast tenant_id::text ensures the comparison works regardless of whether
+// the column is stored as text, varchar, or a numeric type.
 func GetTSTables(mainDB *sql.DB, mainSchema string, tenantIDs []string) ([]TSTableName, error) {
-	src := fmt.Sprintf("%s.thing_product", quoteIdent(mainSchema))
+	src := fmt.Sprintf("%s.%s", quoteIdent(mainSchema), quoteIdent("thing_product"))
 	var q string
 	var args []interface{}
 	if len(tenantIDs) > 0 {
 		q = fmt.Sprintf(`
 			SELECT DISTINCT iot_table
 			FROM %s
-			WHERE iot_table IS NOT NULL AND iot_table != ''
-			  AND tenant_id = ANY($1::text[])
+			WHERE iot_table IS NOT NULL AND trim(iot_table) != ''
+			  AND tenant_id::text = ANY($1::text[])
 			ORDER BY iot_table`, src)
 		args = []interface{}{pqArray(tenantIDs)}
 	} else {
 		q = fmt.Sprintf(`
 			SELECT DISTINCT iot_table
 			FROM %s
-			WHERE iot_table IS NOT NULL AND iot_table != ''
+			WHERE iot_table IS NOT NULL AND trim(iot_table) != ''
 			ORDER BY iot_table`, src)
 	}
 
@@ -63,9 +65,62 @@ func GetTSTables(mainDB *sql.DB, mainSchema string, tenantIDs []string) ([]TSTab
 		if err := rows.Scan(&t); err != nil {
 			return nil, err
 		}
-		tables = append(tables, t)
+		// Strip any schema prefix (e.g. "iot.table_name" → "table_name")
+		if dot := strings.LastIndex(t, "."); dot >= 0 {
+			t = t[dot+1:]
+		}
+		t = strings.Trim(t, `"`)
+		if t != "" {
+			tables = append(tables, t)
+		}
 	}
 	return tables, rows.Err()
+}
+
+// DiagnoseTSTables returns a human-readable summary of thing_product rows and
+// iot_table values for the given tenants. Used when GetTSTables finds nothing.
+func DiagnoseTSTables(mainDB *sql.DB, mainSchema string, tenantIDs []string) string {
+	src := fmt.Sprintf("%s.%s", quoteIdent(mainSchema), quoteIdent("thing_product"))
+
+	// Total rows for tenant.
+	var totalRows int
+	countQ := fmt.Sprintf(`SELECT count(*) FROM %s WHERE tenant_id::text = ANY($1::text[])`, src)
+	if len(tenantIDs) == 0 {
+		countQ = fmt.Sprintf(`SELECT count(*) FROM %s`, src)
+	}
+	_ = mainDB.QueryRow(countQ, pqArray(tenantIDs)).Scan(&totalRows)
+
+	// Distinct iot_table values (including NULLs) for the tenant.
+	sampleQ := fmt.Sprintf(`
+		SELECT iot_table, count(*) as cnt
+		FROM %s
+		WHERE tenant_id::text = ANY($1::text[])
+		GROUP BY iot_table
+		ORDER BY cnt DESC
+		LIMIT 5`, src)
+	rows, err := mainDB.Query(sampleQ, pqArray(tenantIDs))
+	if err != nil {
+		return fmt.Sprintf("thing_product total=%d; could not sample iot_table: %v", totalRows, err)
+	}
+	defer rows.Close()
+
+	var samples []string
+	for rows.Next() {
+		var val sql.NullString
+		var cnt int
+		if rows.Scan(&val, &cnt) == nil {
+			v := "NULL"
+			if val.Valid {
+				v = fmt.Sprintf("%q", val.String)
+			}
+			samples = append(samples, fmt.Sprintf("%s×%d", v, cnt))
+		}
+	}
+
+	if len(samples) == 0 {
+		return fmt.Sprintf("thing_product matched 0 rows for tenants %v (total rows in table: %d)", tenantIDs, totalRows)
+	}
+	return fmt.Sprintf("thing_product rows=%d, iot_table sample: %s", totalRows, strings.Join(samples, ", "))
 }
 
 // HypertableInfo holds the time-dimension column and chunk interval of a hypertable.
@@ -141,7 +196,8 @@ func MigrateTimeSeries(ctx context.Context,
 		return fmt.Errorf("get ts tables: %w", err)
 	}
 	if len(tsTables) == 0 {
-		progress(Progress{Stage: "timeseries", Message: "No time-series tables found for selected tenants"})
+		diag := DiagnoseTSTables(mainDB, mainSchema, tenantIDs)
+		progress(Progress{Stage: "timeseries", Message: "No time-series tables found for selected tenants. " + diag})
 		return nil
 	}
 	progress(Progress{Stage: "timeseries", Message: fmt.Sprintf("Found %d TS tables", len(tsTables)), Total: len(tsTables)})
