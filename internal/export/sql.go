@@ -8,6 +8,7 @@ import (
 
 	"data_factory/internal/config"
 	"data_factory/internal/db"
+	"github.com/lib/pq"
 )
 
 // GenerateSQL generates a SQL migration script and writes it to a string.
@@ -186,8 +187,8 @@ func writeMainData(sb *strings.Builder, srcDB *sql.DB, srcSchema, dstSchema stri
 		var rows *sql.Rows
 		if info.HasTenantID && len(effectiveTenants) > 0 {
 			rows, err = srcDB.Query(
-				fmt.Sprintf(`SELECT %s FROM %s WHERE tenant_id = ANY($1::text[]) ORDER BY 1`, colList, src),
-				pqArray(effectiveTenants))
+				fmt.Sprintf(`SELECT %s FROM %s WHERE tenant_id::text = ANY($1) ORDER BY 1`, colList, src),
+				pq.Array(effectiveTenants))
 		} else {
 			rows, err = srcDB.Query(fmt.Sprintf(`SELECT %s FROM %s ORDER BY 1`, colList, src))
 		}
@@ -294,14 +295,6 @@ func quotedIdents(ss []string) []string {
 		out[i] = quoteIdent(s)
 	}
 	return out
-}
-
-func pqArray(ss []string) interface{} {
-	escaped := make([]string, len(ss))
-	for i, s := range ss {
-		escaped[i] = `"` + strings.ReplaceAll(s, `"`, `\"`) + `"`
-	}
-	return "{" + strings.Join(escaped, ",") + "}"
 }
 
 func sqlLiteral(v interface{}) string {

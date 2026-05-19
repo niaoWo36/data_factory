@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"fmt"
 	"strings"
+
+	"github.com/lib/pq"
 )
 
 // Progress is emitted during a migration to report status.
@@ -185,9 +187,9 @@ func migrateDataSameDB(ctx context.Context, db *sql.DB, info *TableInfo,
 	var q string
 	if info.HasTenantID && len(tenantIDs) > 0 {
 		q = fmt.Sprintf(
-			`INSERT INTO %s (%s) SELECT %s FROM %s WHERE tenant_id = ANY($1::text[]) ON CONFLICT DO NOTHING`,
+			`INSERT INTO %s (%s) SELECT %s FROM %s WHERE tenant_id::text = ANY($1) ON CONFLICT DO NOTHING`,
 			dst, colList, colList, src)
-		_, err := db.ExecContext(ctx, q, pqArray(tenantIDs))
+		_, err := db.ExecContext(ctx, q, pq.Array(tenantIDs))
 		return err
 	}
 	q = fmt.Sprintf(`INSERT INTO %s (%s) SELECT %s FROM %s ON CONFLICT DO NOTHING`, dst, colList, colList, src)
@@ -206,8 +208,8 @@ func migrateDataCrossDB(ctx context.Context, srcDB, dstDB *sql.DB, info *TableIn
 	var selectQ string
 	var args []interface{}
 	if info.HasTenantID && len(tenantIDs) > 0 {
-		selectQ = fmt.Sprintf(`SELECT %s FROM %s WHERE tenant_id = ANY($1::text[])`, colList, src)
-		args = []interface{}{pqArray(tenantIDs)}
+		selectQ = fmt.Sprintf(`SELECT %s FROM %s WHERE tenant_id::text = ANY($1)`, colList, src)
+		args = []interface{}{pq.Array(tenantIDs)}
 	} else {
 		selectQ = fmt.Sprintf(`SELECT %s FROM %s`, colList, src)
 	}
@@ -303,14 +305,10 @@ func makePlaceholders(n int) string {
 	return strings.Join(parts, ", ")
 }
 
-// pqArray wraps a []string into a value that lib/pq recognises as a text[] parameter.
-func pqArray(ss []string) interface{} {
-	// Build a PostgreSQL array literal: '{"a","b","c"}'
-	escaped := make([]string, len(ss))
-	for i, s := range ss {
-		escaped[i] = `"` + strings.ReplaceAll(s, `"`, `\"`) + `"`
-	}
-	return "{" + strings.Join(escaped, ",") + "}"
+// tenantArray returns a pq.Array value suitable for use in
+// WHERE tenant_id::text = ANY($1) queries.
+func tenantArray(ids []string) interface{} {
+	return pq.Array(ids)
 }
 
 // syncExtensions tries to install on dstDB every extension that is installed on

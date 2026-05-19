@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"fmt"
 	"strings"
+
+	"github.com/lib/pq"
 )
 
 // TSTableName is the name of a time-series (hypertable) table.
@@ -42,9 +44,9 @@ func GetTSTables(mainDB *sql.DB, mainSchema string, tenantIDs []string) ([]TSTab
 			SELECT DISTINCT iot_table
 			FROM %s
 			WHERE iot_table IS NOT NULL AND trim(iot_table) != ''
-			  AND tenant_id::text = ANY($1::text[])
+			  AND tenant_id::text = ANY($1)
 			ORDER BY iot_table`, src)
-		args = []interface{}{pqArray(tenantIDs)}
+		args = []interface{}{pq.Array(tenantIDs)}
 	} else {
 		q = fmt.Sprintf(`
 			SELECT DISTINCT iot_table
@@ -84,21 +86,21 @@ func DiagnoseTSTables(mainDB *sql.DB, mainSchema string, tenantIDs []string) str
 
 	// Total rows for tenant.
 	var totalRows int
-	countQ := fmt.Sprintf(`SELECT count(*) FROM %s WHERE tenant_id::text = ANY($1::text[])`, src)
+	countQ := fmt.Sprintf(`SELECT count(*) FROM %s WHERE tenant_id::text = ANY($1)`, src)
 	if len(tenantIDs) == 0 {
 		countQ = fmt.Sprintf(`SELECT count(*) FROM %s`, src)
 	}
-	_ = mainDB.QueryRow(countQ, pqArray(tenantIDs)).Scan(&totalRows)
+	_ = mainDB.QueryRow(countQ, pq.Array(tenantIDs)).Scan(&totalRows)
 
 	// Distinct iot_table values (including NULLs) for the tenant.
 	sampleQ := fmt.Sprintf(`
 		SELECT iot_table, count(*) as cnt
 		FROM %s
-		WHERE tenant_id::text = ANY($1::text[])
+		WHERE tenant_id::text = ANY($1)
 		GROUP BY iot_table
 		ORDER BY cnt DESC
 		LIMIT 5`, src)
-	rows, err := mainDB.Query(sampleQ, pqArray(tenantIDs))
+	rows, err := mainDB.Query(sampleQ, pq.Array(tenantIDs))
 	if err != nil {
 		return fmt.Sprintf("thing_product total=%d; could not sample iot_table: %v", totalRows, err)
 	}
@@ -292,8 +294,8 @@ func ExportTSData(tsDB *sql.DB, srcSchema, table string, tenantIDs []string) ([]
 	if info.HasTenantID && len(tenantIDs) > 0 {
 		var err error
 		rows, err = tsDB.Query(
-			fmt.Sprintf(`SELECT %s FROM %s WHERE tenant_id = ANY($1::text[]) ORDER BY 1`, colList, src),
-			pqArray(tenantIDs))
+			fmt.Sprintf(`SELECT %s FROM %s WHERE tenant_id::text = ANY($1) ORDER BY 1`, colList, src),
+			pq.Array(tenantIDs))
 		if err != nil {
 			return nil, err
 		}
