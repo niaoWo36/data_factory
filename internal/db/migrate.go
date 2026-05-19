@@ -136,6 +136,15 @@ func MigrateData(ctx context.Context, srcDB, dstDB *sql.DB, srcSchema, dstSchema
 		if err := ctx.Err(); err != nil {
 			return err
 		}
+
+		// Schema-only tables: skip data entirely.
+		if SchemaOnlyTables[table] {
+			progress(Progress{Stage: "data", Table: table,
+				Message: fmt.Sprintf("Skipped data for %s (schema-only table)", table),
+				Done: i + 1, Total: len(tables)})
+			continue
+		}
+
 		info, err := IntrospectTable(srcDB, srcSchema, table)
 		if err != nil {
 			progress(Progress{Stage: "data", Table: table,
@@ -143,11 +152,14 @@ func MigrateData(ctx context.Context, srcDB, dstDB *sql.DB, srcSchema, dstSchema
 			continue
 		}
 
+		// For base-tenant tables always include tenant 000000.
+		effectiveTenants := EffectiveTenantIDs(table, tenantIDs)
+
 		var dataErr error
 		if sameDB {
-			dataErr = migrateDataSameDB(ctx, srcDB, info, srcSchema, dstSchema, tenantIDs, progress)
+			dataErr = migrateDataSameDB(ctx, srcDB, info, srcSchema, dstSchema, effectiveTenants, progress)
 		} else {
-			dataErr = migrateDataCrossDB(ctx, srcDB, dstDB, info, srcSchema, dstSchema, tenantIDs, progress)
+			dataErr = migrateDataCrossDB(ctx, srcDB, dstDB, info, srcSchema, dstSchema, effectiveTenants, progress)
 		}
 		if dataErr != nil {
 			progress(Progress{Stage: "data", Table: table,

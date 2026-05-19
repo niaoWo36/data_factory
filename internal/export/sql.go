@@ -166,6 +166,12 @@ func writeMainData(sb *strings.Builder, srcDB *sql.DB, srcSchema, dstSchema stri
 		return err
 	}
 	for _, table := range tables {
+		// Schema-only tables: skip data in export too.
+		if db.SchemaOnlyTables[table] {
+			sb.WriteString(fmt.Sprintf("-- Skipped data for %s (schema-only table)\n", table))
+			continue
+		}
+
 		info, err := db.IntrospectTable(srcDB, srcSchema, table)
 		if err != nil {
 			return err
@@ -174,11 +180,14 @@ func writeMainData(sb *strings.Builder, srcDB *sql.DB, srcSchema, dstSchema stri
 		src := fmt.Sprintf("%s.%s", quoteIdent(srcSchema), quoteIdent(table))
 		dst := fmt.Sprintf("%s.%s", quoteIdent(dstSchema), quoteIdent(table))
 
+		// For base-tenant tables always include tenant 000000.
+		effectiveTenants := db.EffectiveTenantIDs(table, tenantIDs)
+
 		var rows *sql.Rows
-		if info.HasTenantID && len(tenantIDs) > 0 {
+		if info.HasTenantID && len(effectiveTenants) > 0 {
 			rows, err = srcDB.Query(
 				fmt.Sprintf(`SELECT %s FROM %s WHERE tenant_id = ANY($1::text[]) ORDER BY 1`, colList, src),
-				pqArray(tenantIDs))
+				pqArray(effectiveTenants))
 		} else {
 			rows, err = srcDB.Query(fmt.Sprintf(`SELECT %s FROM %s ORDER BY 1`, colList, src))
 		}
