@@ -133,16 +133,20 @@ type HypertableInfo struct {
 
 // GetHypertableInfo retrieves the time-dimension column and chunk interval for the given hypertable.
 func GetHypertableInfo(tsDB *sql.DB, schema, table string) (*HypertableInfo, error) {
+	actualTable, err := resolveTableName(tsDB, schema, table)
+	if err != nil {
+		return nil, err
+	}
 	const q = `
 		SELECT d.column_name,
 		       _timescaledb_functions.to_interval(d.interval_length)::text
 		FROM _timescaledb_catalog.hypertable h
 		JOIN _timescaledb_catalog.dimension d ON d.hypertable_id = h.id
 		WHERE h.schema_name = $1 AND h.table_name = $2
-		  AND d.column_type != 'integer'
+		  AND d.column_type <> 'integer'::regtype
 		LIMIT 1`
 	var hi HypertableInfo
-	err := tsDB.QueryRow(q, schema, table).Scan(&hi.TimeDimension, &hi.ChunkTimeInterval)
+	err = tsDB.QueryRow(q, schema, actualTable).Scan(&hi.TimeDimension, &hi.ChunkTimeInterval)
 	if err == sql.ErrNoRows {
 		// Try the older API (pre-2.x)
 		const q2 = `
@@ -150,8 +154,10 @@ func GetHypertableInfo(tsDB *sql.DB, schema, table string) (*HypertableInfo, err
 			       _timescaledb_internal.to_interval(d.interval_length)::text
 			FROM _timescaledb_catalog.hypertable h
 			JOIN _timescaledb_catalog.dimension d ON d.hypertable_id = h.id
-			WHERE h.schema_name = $1 AND h.table_name = $2 LIMIT 1`
-		err2 := tsDB.QueryRow(q2, schema, table).Scan(&hi.TimeDimension, &hi.ChunkTimeInterval)
+			WHERE h.schema_name = $1 AND h.table_name = $2
+			  AND d.column_type <> 'integer'::regtype
+			LIMIT 1`
+		err2 := tsDB.QueryRow(q2, schema, actualTable).Scan(&hi.TimeDimension, &hi.ChunkTimeInterval)
 		if err2 != nil {
 			// Default fallback
 			hi.TimeDimension = "time"
@@ -159,7 +165,7 @@ func GetHypertableInfo(tsDB *sql.DB, schema, table string) (*HypertableInfo, err
 			return &hi, nil
 		}
 	} else if err != nil {
-		return nil, fmt.Errorf("get hypertable info %s.%s: %w", schema, table, err)
+		return nil, fmt.Errorf("get hypertable info %s.%s: %w", schema, actualTable, err)
 	}
 	return &hi, nil
 }
@@ -218,13 +224,14 @@ func MigrateTimeSeries(ctx context.Context,
 		}
 
 		// Create plain table on destination.
+		actualTable := info.Name
 		ddl := CreateTableDDL(info, dstTSSchema)
 		if _, err := dstTSDB.ExecContext(ctx, ddl); err != nil {
-			return fmt.Errorf("create ts table %s: %w", table, err)
+			return fmt.Errorf("create ts table %s: %w", actualTable, err)
 		}
 
 		// Get hypertable metadata.
-		hi, err := GetHypertableInfo(srcTSDB, srcTSSchema, table)
+		hi, err := GetHypertableInfo(srcTSDB, srcTSSchema, actualTable)
 		if err != nil {
 			return err
 		}
@@ -232,24 +239,24 @@ func MigrateTimeSeries(ctx context.Context,
 		// Convert to hypertable on destination.
 		createHT := fmt.Sprintf(
 			`SELECT create_hypertable('%s.%s', '%s', chunk_time_interval => INTERVAL '%s', if_not_exists => TRUE)`,
-			dstTSSchema, table, hi.TimeDimension, hi.ChunkTimeInterval)
+			dstTSSchema, actualTable, hi.TimeDimension, hi.ChunkTimeInterval)
 		if _, err := dstTSDB.ExecContext(ctx, createHT); err != nil {
-			return fmt.Errorf("create_hypertable %s: %w", table, err)
+			return fmt.Errorf("create_hypertable %s: %w", actualTable, err)
 		}
 
 		// Migrate data.
 		if sameDB {
 			if err := migrateDataSameDB(ctx, srcTSDB, info, srcTSSchema, dstTSSchema, tenantIDs, progress); err != nil {
-				return fmt.Errorf("migrate ts data %s: %w", table, err)
+				return fmt.Errorf("migrate ts data %s: %w", actualTable, err)
 			}
 		} else {
 			if err := migrateDataCrossDB(ctx, srcTSDB, dstTSDB, info, srcTSSchema, dstTSSchema, tenantIDs, progress); err != nil {
-				return fmt.Errorf("migrate ts data %s: %w", table, err)
+				return fmt.Errorf("migrate ts data %s: %w", actualTable, err)
 			}
 		}
 
-		progress(Progress{Stage: "timeseries", Table: table,
-			Message: fmt.Sprintf("TS table %s migrated", table), Done: i + 1, Total: len(tsTables)})
+		progress(Progress{Stage: "timeseries", Table: actualTable,
+			Message: fmt.Sprintf("TS table %s migrated", actualTable), Done: i + 1, Total: len(tsTables)})
 	}
 
 	progress(Progress{Stage: "timeseries", Message: "Time-series migration complete",
@@ -264,7 +271,7 @@ func TSTableDDL(tsDB *sql.DB, srcSchema, dstSchema, table string) ([]string, err
 	if err != nil {
 		return nil, err
 	}
-	hi, err := GetHypertableInfo(tsDB, srcSchema, table)
+	hi, err := GetHypertableInfo(tsDB, srcSchema, info.Name)
 	if err != nil {
 		return nil, err
 	}
@@ -272,7 +279,7 @@ func TSTableDDL(tsDB *sql.DB, srcSchema, dstSchema, table string) ([]string, err
 	ddl := CreateTableDDL(info, dstSchema)
 	createHT := fmt.Sprintf(
 		`SELECT create_hypertable('%s.%s', '%s', chunk_time_interval => INTERVAL '%s', if_not_exists => TRUE);`,
-		dstSchema, table, hi.TimeDimension, hi.ChunkTimeInterval)
+		dstSchema, info.Name, hi.TimeDimension, hi.ChunkTimeInterval)
 
 	stmts := []string{ddl, createHT}
 
@@ -288,7 +295,7 @@ func ExportTSData(tsDB *sql.DB, srcSchema, table string, tenantIDs []string) ([]
 		return nil, err
 	}
 	colList := columnList(info.Columns)
-	src := fmt.Sprintf("%s.%s", quoteIdent(srcSchema), quoteIdent(table))
+	src := fmt.Sprintf("%s.%s", quoteIdent(srcSchema), quoteIdent(info.Name))
 
 	var rows *sql.Rows
 	if info.HasTenantID && len(tenantIDs) > 0 {

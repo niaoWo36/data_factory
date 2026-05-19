@@ -79,7 +79,6 @@ func rewriteNextval(val, dstSchema string) string {
 	})
 }
 
-
 type Column struct {
 	Name       string
 	DataType   string
@@ -138,7 +137,11 @@ func ListTables(db *sql.DB, schema string) ([]string, error) {
 
 // IntrospectTable returns full metadata for the named table in the given schema.
 func IntrospectTable(db *sql.DB, schema, table string) (*TableInfo, error) {
-	info := &TableInfo{Schema: schema, Name: table}
+	actualTable, err := resolveTableName(db, schema, table)
+	if err != nil {
+		return nil, err
+	}
+	info := &TableInfo{Schema: schema, Name: actualTable}
 
 	// --- Columns ---
 	colRows, err := db.Query(`
@@ -148,7 +151,7 @@ func IntrospectTable(db *sql.DB, schema, table string) (*TableInfo, error) {
 		       udt_name
 		FROM information_schema.columns
 		WHERE table_schema = $1 AND table_name = $2
-		ORDER BY ordinal_position`, schema, table)
+		ORDER BY ordinal_position`, schema, actualTable)
 	if err != nil {
 		return nil, fmt.Errorf("columns: %w", err)
 	}
@@ -173,6 +176,9 @@ func IntrospectTable(db *sql.DB, schema, table string) (*TableInfo, error) {
 	if err := colRows.Err(); err != nil {
 		return nil, err
 	}
+	if len(info.Columns) == 0 {
+		return nil, fmt.Errorf("table %s.%s not found", quoteIdent(schema), quoteIdent(actualTable))
+	}
 
 	// --- Constraints ---
 	conRows, err := db.Query(`
@@ -182,7 +188,7 @@ func IntrospectTable(db *sql.DB, schema, table string) (*TableInfo, error) {
 		JOIN pg_class cls ON cls.oid = con.conrelid
 		JOIN pg_namespace ns  ON ns.oid  = cls.relnamespace
 		WHERE ns.nspname = $1 AND cls.relname = $2
-		ORDER BY con.contype, con.conname`, schema, table)
+		ORDER BY con.contype, con.conname`, schema, actualTable)
 	if err != nil {
 		return nil, fmt.Errorf("constraints: %w", err)
 	}
@@ -224,7 +230,7 @@ func IntrospectTable(db *sql.DB, schema, table string) (*TableInfo, error) {
 		            AND relnamespace = (SELECT oid FROM pg_namespace WHERE nspname = $1)
 		      )
 		  )
-		ORDER BY indexname`, schema, table)
+		ORDER BY indexname`, schema, actualTable)
 	if err != nil {
 		return nil, fmt.Errorf("indexes: %w", err)
 	}
@@ -237,6 +243,23 @@ func IntrospectTable(db *sql.DB, schema, table string) (*TableInfo, error) {
 		info.Indexes = append(info.Indexes, idx)
 	}
 	return info, idxRows.Err()
+}
+
+func resolveTableName(db *sql.DB, schema, table string) (string, error) {
+	var actual string
+	err := db.QueryRow(`
+		SELECT table_name
+		FROM information_schema.tables
+		WHERE table_schema = $1 AND lower(table_name) = lower($2)
+		ORDER BY CASE WHEN table_name = $2 THEN 0 ELSE 1 END
+		LIMIT 1`, schema, table).Scan(&actual)
+	if err == sql.ErrNoRows {
+		return table, nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("resolve table name %s.%s: %w", schema, table, err)
+	}
+	return actual, nil
 }
 
 // CreateTableDDL generates a CREATE TABLE IF NOT EXISTS statement for the given
@@ -254,9 +277,9 @@ func CreateTableDDL(info *TableInfo, targetSchema string) string {
 			sb.WriteString(" NOT NULL")
 		}
 		if c.Default.Valid {
-				def := rewriteNextval(c.Default.String, targetSchema)
-				sb.WriteString(fmt.Sprintf(" DEFAULT %s", def))
-			}
+			def := rewriteNextval(c.Default.String, targetSchema)
+			sb.WriteString(fmt.Sprintf(" DEFAULT %s", def))
+		}
 		if i < len(info.Columns)-1 || hasNonFKConstraints(info) {
 			sb.WriteString(",")
 		}
