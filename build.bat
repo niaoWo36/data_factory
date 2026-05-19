@@ -35,12 +35,12 @@ echo.
 
 if not exist %DIST_DIR% mkdir %DIST_DIR%
 
-if "%TARGET%"=="clean" goto :clean
-if "%TARGET%"=="win"   goto :build_win
-if "%TARGET%"=="mac"   goto :build_mac
-if "%TARGET%"=="linux" goto :build_linux
+if "%TARGET%"=="clean"   goto :clean
+if "%TARGET%"=="win"     goto :build_win
+if "%TARGET%"=="mac"     goto :build_mac
+if "%TARGET%"=="linux"   goto :build_linux
 if "%TARGET%"=="current" goto :build_current
-if "%TARGET%"=="all"   goto :build_all
+if "%TARGET%"=="all"     goto :build_all
 
 echo 未知目标: %TARGET%
 exit /b 1
@@ -52,47 +52,59 @@ call :build_linux
 goto :done
 
 :build_win
+set OUTDIR=%DIST_DIR%\data-windows-amd64
+if exist %OUTDIR% ( rmdir /s /q %OUTDIR% & echo   已清理旧目录: %OUTDIR% )
+mkdir %OUTDIR%
 echo   [BUILD] GOOS=windows GOARCH=amd64
-set OUTDIR=%DIST_DIR%\%APP_NAME%_%VERSION%_windows-amd64
-if not exist %OUTDIR% mkdir %OUTDIR%
 set CGO_ENABLED=0
 set GOOS=windows
 set GOARCH=amd64
 go build -trimpath -ldflags "%LDFLAGS%" -o "%OUTDIR%\%APP_NAME%.exe" .
 if errorlevel 1 ( echo   ❌ Windows 构建失败 & exit /b 1 )
 echo   ✅ %OUTDIR%\%APP_NAME%.exe
+copy /y scripts\start.bat "%OUTDIR%\start.bat" >nul
+echo   ✅ 启动脚本: %OUTDIR%\start.bat
 goto :eof
 
 :build_mac
+set OUTDIR=%DIST_DIR%\data-macos-arm64
+if exist %OUTDIR% ( rmdir /s /q %OUTDIR% & echo   已清理旧目录: %OUTDIR% )
+mkdir %OUTDIR%
 echo   [BUILD] GOOS=darwin GOARCH=arm64
-set OUTDIR=%DIST_DIR%\%APP_NAME%_%VERSION%_macos-arm64
-if not exist %OUTDIR% mkdir %OUTDIR%
 set CGO_ENABLED=0
 set GOOS=darwin
 set GOARCH=arm64
 go build -trimpath -ldflags "%LDFLAGS%" -o "%OUTDIR%\%APP_NAME%" .
 if errorlevel 1 ( echo   ❌ macOS arm64 构建失败 & exit /b 1 )
 echo   ✅ %OUTDIR%\%APP_NAME%
+copy /y scripts\start.sh "%OUTDIR%\start.sh" >nul
+echo   ✅ 启动脚本: %OUTDIR%\start.sh
 
+set OUTDIR=%DIST_DIR%\data-macos-amd64
+if exist %OUTDIR% ( rmdir /s /q %OUTDIR% & echo   已清理旧目录: %OUTDIR% )
+mkdir %OUTDIR%
 echo   [BUILD] GOOS=darwin GOARCH=amd64
-set OUTDIR=%DIST_DIR%\%APP_NAME%_%VERSION%_macos-amd64
-if not exist %OUTDIR% mkdir %OUTDIR%
 set GOARCH=amd64
 go build -trimpath -ldflags "%LDFLAGS%" -o "%OUTDIR%\%APP_NAME%" .
 if errorlevel 1 ( echo   ❌ macOS amd64 构建失败 & exit /b 1 )
 echo   ✅ %OUTDIR%\%APP_NAME%
+copy /y scripts\start.sh "%OUTDIR%\start.sh" >nul
+echo   ✅ 启动脚本: %OUTDIR%\start.sh
 goto :eof
 
 :build_linux
+set OUTDIR=%DIST_DIR%\data-linux-amd64
+if exist %OUTDIR% ( rmdir /s /q %OUTDIR% & echo   已清理旧目录: %OUTDIR% )
+mkdir %OUTDIR%
 echo   [BUILD] GOOS=linux GOARCH=amd64
-set OUTDIR=%DIST_DIR%\%APP_NAME%_%VERSION%_linux-amd64
-if not exist %OUTDIR% mkdir %OUTDIR%
 set CGO_ENABLED=0
 set GOOS=linux
 set GOARCH=amd64
 go build -trimpath -ldflags "%LDFLAGS%" -o "%OUTDIR%\%APP_NAME%" .
 if errorlevel 1 ( echo   ❌ Linux 构建失败 & exit /b 1 )
 echo   ✅ %OUTDIR%\%APP_NAME%
+copy /y scripts\start.sh "%OUTDIR%\start.sh" >nul
+echo   ✅ 启动脚本: %OUTDIR%\start.sh
 goto :eof
 
 :build_current
@@ -100,11 +112,14 @@ echo   [BUILD] 当前平台
 set CGO_ENABLED=0
 set GOOS=
 set GOARCH=
-set OUTDIR=%DIST_DIR%\%APP_NAME%_%VERSION%_current
-if not exist %OUTDIR% mkdir %OUTDIR%
+set OUTDIR=%DIST_DIR%\data-current
+if exist %OUTDIR% ( rmdir /s /q %OUTDIR% & echo   已清理旧目录: %OUTDIR% )
+mkdir %OUTDIR%
 go build -trimpath -ldflags "%LDFLAGS%" -o "%OUTDIR%\%APP_NAME%.exe" .
 if errorlevel 1 ( echo   ❌ 当前平台构建失败 & exit /b 1 )
 echo   ✅ %OUTDIR%\%APP_NAME%.exe
+copy /y scripts\start.bat "%OUTDIR%\start.bat" >nul
+echo   ✅ 启动脚本: %OUTDIR%\start.bat
 goto :done
 
 :clean
@@ -116,7 +131,7 @@ goto :eof
 :done
 echo.
 echo 📦 输出目录: %DIST_DIR%\
-dir /b %DIST_DIR%\ 2>nul
+dir /b %DIST_DIR%\ 2>nul | findstr /r ".*" && echo. || echo   (空)
 echo.
 echo ✨ 打包完成
 endlocal

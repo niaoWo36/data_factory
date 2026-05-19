@@ -24,13 +24,30 @@ clean() { rm -rf "${DIST_DIR}"; echo "  🗑️  dist/ 已清理"; }
 
 build_target() {
     local GOOS=$1 GOARCH=$2 SUFFIX=$3 LABEL=$4
-    local OUT_DIR="${DIST_DIR}/${APP_NAME}_${VERSION}_${LABEL}"
+    local OUT_DIR="${DIST_DIR}/data-${LABEL}"
+
+    # 删除旧的打包目录
+    if [ -d "${OUT_DIR}" ]; then
+        rm -rf "${OUT_DIR}"
+        info "已清理旧目录: ${OUT_DIR}"
+    fi
     mkdir -p "${OUT_DIR}"
+
     local BIN="${OUT_DIR}/${APP_NAME}${SUFFIX}"
     info "GOOS=${GOOS} GOARCH=${GOARCH} → ${BIN}"
     GOOS=${GOOS} GOARCH=${GOARCH} CGO_ENABLED=0 \
         go build -trimpath -ldflags "${LDFLAGS}" -o "${BIN}" .
     ok "${BIN} ($(du -sh "${BIN}" | cut -f1))"
+
+    # 复制对应平台的启动脚本
+    if [ "${GOOS}" = "windows" ]; then
+        cp scripts/start.bat "${OUT_DIR}/start.bat"
+        ok "启动脚本: ${OUT_DIR}/start.bat"
+    else
+        cp scripts/start.sh "${OUT_DIR}/start.sh"
+        chmod +x "${OUT_DIR}/start.sh"
+        ok "启动脚本: ${OUT_DIR}/start.sh"
+    fi
 }
 
 build_mac()   {
@@ -71,6 +88,6 @@ esac
 
 echo ""
 echo "📦 输出目录: ${DIST_DIR}/"
-ls -lh "${DIST_DIR}"/ 2>/dev/null
+ls -1 "${DIST_DIR}"/ 2>/dev/null | sed 's/^/    /'
 echo ""
 echo "✨ 打包完成"

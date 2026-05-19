@@ -11,40 +11,49 @@ all: mac win linux
 
 ## mac: 打包 macOS (Apple Silicon + Intel)
 mac:
-	@mkdir -p $(DIST_DIR)/$(APP_NAME)_$(VERSION)_macos-arm64
+	@rm -rf $(DIST_DIR)/data-macos-arm64 $(DIST_DIR)/data-macos-amd64
+	@mkdir -p $(DIST_DIR)/data-macos-arm64 $(DIST_DIR)/data-macos-amd64
 	@echo "  [BUILD] darwin/arm64"
 	GOOS=darwin  GOARCH=arm64 CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)" \
-		-o $(DIST_DIR)/$(APP_NAME)_$(VERSION)_macos-arm64/$(APP_NAME) .
-	@echo "  ✅  $(DIST_DIR)/$(APP_NAME)_$(VERSION)_macos-arm64/$(APP_NAME)"
-
-	@mkdir -p $(DIST_DIR)/$(APP_NAME)_$(VERSION)_macos-amd64
+		-o $(DIST_DIR)/data-macos-arm64/$(APP_NAME) .
+	@cp scripts/start.sh $(DIST_DIR)/data-macos-arm64/start.sh && chmod +x $(DIST_DIR)/data-macos-arm64/start.sh
+	@echo "  ✅  $(DIST_DIR)/data-macos-arm64/"
 	@echo "  [BUILD] darwin/amd64"
 	GOOS=darwin  GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)" \
-		-o $(DIST_DIR)/$(APP_NAME)_$(VERSION)_macos-amd64/$(APP_NAME) .
-	@echo "  ✅  $(DIST_DIR)/$(APP_NAME)_$(VERSION)_macos-amd64/$(APP_NAME)"
+		-o $(DIST_DIR)/data-macos-amd64/$(APP_NAME) .
+	@cp scripts/start.sh $(DIST_DIR)/data-macos-amd64/start.sh && chmod +x $(DIST_DIR)/data-macos-amd64/start.sh
+	@echo "  ✅  $(DIST_DIR)/data-macos-amd64/"
 
 ## win: 打包 Windows amd64
 win:
-	@mkdir -p $(DIST_DIR)/$(APP_NAME)_$(VERSION)_windows-amd64
+	@rm -rf $(DIST_DIR)/data-windows-amd64
+	@mkdir -p $(DIST_DIR)/data-windows-amd64
 	@echo "  [BUILD] windows/amd64"
 	GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)" \
-		-o $(DIST_DIR)/$(APP_NAME)_$(VERSION)_windows-amd64/$(APP_NAME).exe .
-	@echo "  ✅  $(DIST_DIR)/$(APP_NAME)_$(VERSION)_windows-amd64/$(APP_NAME).exe"
+		-o $(DIST_DIR)/data-windows-amd64/$(APP_NAME).exe .
+	@cp scripts/start.bat $(DIST_DIR)/data-windows-amd64/start.bat
+	@echo "  ✅  $(DIST_DIR)/data-windows-amd64/"
 
 ## linux: 打包 Linux amd64
 linux:
-	@mkdir -p $(DIST_DIR)/$(APP_NAME)_$(VERSION)_linux-amd64
+	@rm -rf $(DIST_DIR)/data-linux-amd64
+	@mkdir -p $(DIST_DIR)/data-linux-amd64
 	@echo "  [BUILD] linux/amd64"
 	GOOS=linux   GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)" \
-		-o $(DIST_DIR)/$(APP_NAME)_$(VERSION)_linux-amd64/$(APP_NAME) .
-	@echo "  ✅  $(DIST_DIR)/$(APP_NAME)_$(VERSION)_linux-amd64/$(APP_NAME)"
+		-o $(DIST_DIR)/data-linux-amd64/$(APP_NAME) .
+	@cp scripts/start.sh $(DIST_DIR)/data-linux-amd64/start.sh && chmod +x $(DIST_DIR)/data-linux-amd64/start.sh
+	@echo "  ✅  $(DIST_DIR)/data-linux-amd64/"
 
 ## current: 仅打包当前运行平台
 current:
-	@mkdir -p $(DIST_DIR)
+	@rm -rf $(DIST_DIR)/data-$(shell go env GOOS)-$(shell go env GOARCH)
+	@mkdir -p $(DIST_DIR)/data-$(shell go env GOOS)-$(shell go env GOARCH)
 	@echo "  [BUILD] $(shell go env GOOS)/$(shell go env GOARCH)"
-	CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)" -o $(DIST_DIR)/$(APP_NAME) .
-	@echo "  ✅  $(DIST_DIR)/$(APP_NAME)"
+	CGO_ENABLED=0 go build -trimpath -ldflags "$(LDFLAGS)" \
+		-o $(DIST_DIR)/data-$(shell go env GOOS)-$(shell go env GOARCH)/$(APP_NAME) .
+	@cp scripts/start.sh $(DIST_DIR)/data-$(shell go env GOOS)-$(shell go env GOARCH)/start.sh \
+		&& chmod +x $(DIST_DIR)/data-$(shell go env GOOS)-$(shell go env GOARCH)/start.sh
+	@echo "  ✅  $(DIST_DIR)/data-$(shell go env GOOS)-$(shell go env GOARCH)/"
 
 ## clean: 删除 dist/ 目录
 clean:
