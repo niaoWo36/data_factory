@@ -44,7 +44,7 @@ func GetTSTables(mainDB *sql.DB, mainSchema string, tenantIDs []string) ([]TSTab
 			SELECT DISTINCT iot_table
 			FROM %s
 			WHERE iot_table IS NOT NULL AND trim(iot_table) != ''
-			  AND tenant_id::text = ANY($1)
+			  AND tenant_id::text = ANY($1::text[])
 			ORDER BY iot_table`, src)
 		args = []interface{}{pq.Array(tenantIDs)}
 	} else {
@@ -86,7 +86,7 @@ func DiagnoseTSTables(mainDB *sql.DB, mainSchema string, tenantIDs []string) str
 
 	// Total rows for tenant.
 	var totalRows int
-	countQ := fmt.Sprintf(`SELECT count(*) FROM %s WHERE tenant_id::text = ANY($1)`, src)
+	countQ := fmt.Sprintf(`SELECT count(*) FROM %s WHERE tenant_id::text = ANY($1::text[])`, src)
 	if len(tenantIDs) == 0 {
 		countQ = fmt.Sprintf(`SELECT count(*) FROM %s`, src)
 	}
@@ -96,7 +96,7 @@ func DiagnoseTSTables(mainDB *sql.DB, mainSchema string, tenantIDs []string) str
 	sampleQ := fmt.Sprintf(`
 		SELECT iot_table, count(*) as cnt
 		FROM %s
-		WHERE tenant_id::text = ANY($1)
+		WHERE tenant_id::text = ANY($1::text[])
 		GROUP BY iot_table
 		ORDER BY cnt DESC
 		LIMIT 5`, src)
@@ -294,7 +294,7 @@ func ExportTSData(tsDB *sql.DB, srcSchema, table string, tenantIDs []string) ([]
 	if info.HasTenantID && len(tenantIDs) > 0 {
 		var err error
 		rows, err = tsDB.Query(
-			fmt.Sprintf(`SELECT %s FROM %s WHERE tenant_id::text = ANY($1) ORDER BY 1`, colList, src),
+			fmt.Sprintf(`SELECT %s FROM %s WHERE tenant_id::text = ANY($1::text[]) ORDER BY 1`, colList, src),
 			pq.Array(tenantIDs))
 		if err != nil {
 			return nil, err

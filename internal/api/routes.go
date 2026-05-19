@@ -56,6 +56,8 @@ func (s *Server) RegisterRoutes(r *mux.Router) {
 
 	// Tenants
 	api.HandleFunc("/tenants", s.handleListTenants).Methods(http.MethodGet, http.MethodOptions)
+	// Debug (diagnostic only)
+	api.HandleFunc("/debug/query", s.handleDebugQuery).Methods(http.MethodPost, http.MethodOptions)
 
 	// Migration
 	api.HandleFunc("/migrate/start", s.handleMigrateStart).Methods(http.MethodPost, http.MethodOptions)

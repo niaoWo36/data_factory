@@ -187,7 +187,7 @@ func writeMainData(sb *strings.Builder, srcDB *sql.DB, srcSchema, dstSchema stri
 		var rows *sql.Rows
 		if info.HasTenantID && len(effectiveTenants) > 0 {
 			rows, err = srcDB.Query(
-				fmt.Sprintf(`SELECT %s FROM %s WHERE tenant_id::text = ANY($1) ORDER BY 1`, colList, src),
+				fmt.Sprintf(`SELECT %s FROM %s WHERE tenant_id::text = ANY($1::text[]) ORDER BY 1`, colList, src),
 				pq.Array(effectiveTenants))
 		} else {
 			rows, err = srcDB.Query(fmt.Sprintf(`SELECT %s FROM %s ORDER BY 1`, colList, src))

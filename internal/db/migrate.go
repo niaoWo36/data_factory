@@ -132,7 +132,7 @@ func MigrateData(ctx context.Context, srcDB, dstDB *sql.DB, srcSchema, dstSchema
 	if err != nil {
 		return err
 	}
-	progress(Progress{Stage: "data", Message: fmt.Sprintf("Migrating data for %d tables", len(tables)), Total: len(tables)})
+	progress(Progress{Stage: "data", Message: fmt.Sprintf("Migrating data for %d tables (tenants: %v)", len(tables), tenantIDs), Total: len(tables)})
 
 	for i, table := range tables {
 		if err := ctx.Err(); err != nil {
@@ -187,7 +187,7 @@ func migrateDataSameDB(ctx context.Context, db *sql.DB, info *TableInfo,
 	var q string
 	if info.HasTenantID && len(tenantIDs) > 0 {
 		q = fmt.Sprintf(
-			`INSERT INTO %s (%s) SELECT %s FROM %s WHERE tenant_id::text = ANY($1) ON CONFLICT DO NOTHING`,
+			`INSERT INTO %s (%s) SELECT %s FROM %s WHERE tenant_id::text = ANY($1::text[]) ON CONFLICT DO NOTHING`,
 			dst, colList, colList, src)
 		_, err := db.ExecContext(ctx, q, pq.Array(tenantIDs))
 		return err
@@ -208,7 +208,7 @@ func migrateDataCrossDB(ctx context.Context, srcDB, dstDB *sql.DB, info *TableIn
 	var selectQ string
 	var args []interface{}
 	if info.HasTenantID && len(tenantIDs) > 0 {
-		selectQ = fmt.Sprintf(`SELECT %s FROM %s WHERE tenant_id::text = ANY($1)`, colList, src)
+		selectQ = fmt.Sprintf(`SELECT %s FROM %s WHERE tenant_id::text = ANY($1::text[])`, colList, src)
 		args = []interface{}{pq.Array(tenantIDs)}
 	} else {
 		selectQ = fmt.Sprintf(`SELECT %s FROM %s`, colList, src)
