@@ -179,6 +179,7 @@ func MigrateTimeSeries(ctx context.Context,
 	tenantIDs []string,
 	sameDB bool,
 	progress ProgressFunc) error {
+	_ = sameDB
 
 	// Ensure TimescaleDB is installed on destination.
 	ok, err := CheckTimescaleDB(dstTSDB)
@@ -244,19 +245,8 @@ func MigrateTimeSeries(ctx context.Context,
 			return fmt.Errorf("create_hypertable %s: %w", actualTable, err)
 		}
 
-		// Migrate data.
-		if sameDB {
-			if err := migrateDataSameDB(ctx, srcTSDB, info, srcTSSchema, dstTSSchema, tenantIDs, progress); err != nil {
-				return fmt.Errorf("migrate ts data %s: %w", actualTable, err)
-			}
-		} else {
-			if err := migrateDataCrossDB(ctx, srcTSDB, dstTSDB, info, srcTSSchema, dstTSSchema, tenantIDs, progress); err != nil {
-				return fmt.Errorf("migrate ts data %s: %w", actualTable, err)
-			}
-		}
-
 		progress(Progress{Stage: "timeseries", Table: actualTable,
-			Message: fmt.Sprintf("TS table %s migrated", actualTable), Done: i + 1, Total: len(tsTables)})
+			Message: fmt.Sprintf("TS table %s structure migrated (data skipped)", actualTable), Done: i + 1, Total: len(tsTables)})
 	}
 
 	progress(Progress{Stage: "timeseries", Message: "Time-series migration complete",

@@ -65,9 +65,7 @@ func GenerateSQL(
 				return "", err
 			}
 			if includeData {
-				if err := writeTSData(&sb, srcTSDB, srcTSSchema, tsTables, tenantIDs); err != nil {
-					return "", err
-				}
+				sb.WriteString("-- Time-series data export skipped: TS migration/export only includes table structures.\n\n")
 			}
 		} else {
 			sb.WriteString("-- No time-series tables found for selected tenants.\n")
