@@ -70,6 +70,9 @@ function handleProgress(p) {
     setBadge('badgeSchema', 'done');
     setBadge('badgeData', 'done');
     setBadge('badgeTS', 'done');
+    if (p.status === 'error' || /warning/i.test(p.message || '')) {
+      setBadge('badgeData', 'error');
+    }
   } else if (p.stage === 'error') {
     setBadge('badgeSchema', 'error');
     setBadge('badgeData', 'error');
@@ -92,8 +95,10 @@ function handleProgress(p) {
   if (p.error) {
     appendLog(`❌ ${stageName}${table}: ${p.error}`, 'log-error');
   } else if (p.message) {
-    const cls = p.stage === 'done' ? 'log-ok' : 'log-info';
-    appendLog(`${stageName}${table}: ${p.message}`, cls);
+    let cls = p.stage === 'done' ? 'log-ok' : 'log-info';
+    if (p.status === 'error' || /warning/i.test(p.message || '')) cls = 'log-error';
+    const prefix = cls === 'log-error' ? '⚠ ' : '';
+    appendLog(`${prefix}${stageName}${table}: ${p.message}`, cls);
   }
 }
 

@@ -42,7 +42,7 @@ func (s *Server) handleMigrateStart(w http.ResponseWriter, r *http.Request) {
 		Status:   "running",
 		StartAt:  time.Now(),
 		cancel:   cancel,
-		progress: make(chan db.Progress, 256),
+		progress: make(chan db.Progress, 4096),
 	}
 	s.tasks.Store(taskID, task)
 
@@ -117,7 +117,7 @@ func (s *Server) runMigration(ctx context.Context, task *MigrateTask, opts confi
 		}
 		select {
 		case task.progress <- p:
-		default:
+		case <-ctx.Done():
 		}
 	}
 
@@ -162,10 +162,9 @@ func (s *Server) runMigration(ctx context.Context, task *MigrateTask, opts confi
 		emit(db.Progress{Stage: "data", Message: "Starting data migration..."})
 		if err := db.MigrateData(ctx, srcMain, dstMain, srcSchema, dstSchema,
 			opts.TenantIDs, cfg.SameDB, emit); err != nil {
-			task.Status = "error"
+			task.Status = "done_with_warnings"
 			task.Message = "data: " + err.Error()
 			emit(db.Progress{Stage: "error", Error: task.Message})
-			return
 		}
 	}
 
@@ -198,6 +197,12 @@ func (s *Server) runMigration(ctx context.Context, task *MigrateTask, opts confi
 			emit(db.Progress{Stage: "error", Error: task.Message})
 			return
 		}
+	}
+
+	if task.Status == "done_with_warnings" {
+		log.Printf("migration task %s completed with warnings: %s", task.ID, task.Message)
+		emit(db.Progress{Stage: "done", Message: "Migration completed with warnings: " + task.Message})
+		return
 	}
 
 	task.Status = "done"

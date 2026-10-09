@@ -39,14 +39,14 @@ func GetTSTables(mainDB *sql.DB, mainSchema string, tenantIDs []string) ([]TSTab
 	src := fmt.Sprintf("%s.%s", quoteIdent(mainSchema), quoteIdent("thing_product"))
 	var q string
 	var args []interface{}
-	if len(tenantIDs) > 0 {
+	if eff := EffectiveTenantIDs("thing_product", tenantIDs); len(eff) > 0 {
 		q = fmt.Sprintf(`
 			SELECT DISTINCT iot_table
 			FROM %s
 			WHERE iot_table IS NOT NULL AND trim(iot_table) != ''
-			  AND tenant_id::text = ANY($1::text[])
-			ORDER BY iot_table`, src)
-		args = []interface{}{pq.Array(tenantIDs)}
+			  AND %s
+			ORDER BY iot_table`, src, TenantFilterClause)
+		args = []interface{}{TenantFilterArgs("thing_product", tenantIDs)}
 	} else {
 		q = fmt.Sprintf(`
 			SELECT DISTINCT iot_table
@@ -291,14 +291,14 @@ func ExportTSData(tsDB *sql.DB, srcSchema, table string, tenantIDs []string) ([]
 	if info.HasTenantID && len(tenantIDs) > 0 {
 		var err error
 		rows, err = tsDB.Query(
-			fmt.Sprintf(`SELECT %s FROM %s WHERE tenant_id::text = ANY($1::text[]) ORDER BY 1`, colList, src),
-			pq.Array(tenantIDs))
+			fmt.Sprintf(`SELECT %s FROM %s WHERE %s`, colList, src, TenantFilterClause),
+			TenantFilterArgs(info.Name, tenantIDs))
 		if err != nil {
 			return nil, err
 		}
 	} else {
 		var err error
-		rows, err = tsDB.Query(fmt.Sprintf(`SELECT %s FROM %s ORDER BY 1`, colList, src))
+		rows, err = tsDB.Query(fmt.Sprintf(`SELECT %s FROM %s`, colList, src))
 		if err != nil {
 			return nil, err
 		}
@@ -316,6 +316,10 @@ func rowsToInserts(rows *sql.Rows, info *TableInfo, schema string) ([]string, er
 	}
 	dst := fmt.Sprintf("%s.%s", quoteIdent(schema), quoteIdent(info.Name))
 	colList := strings.Join(quotedIdents(cols), ", ")
+	colTypes := make(map[string]string, len(info.Columns))
+	for _, c := range info.Columns {
+		colTypes[c.Name] = c.DataType
+	}
 
 	var stmts []string
 	vals := make([]interface{}, len(cols))
@@ -330,7 +334,7 @@ func rowsToInserts(rows *sql.Rows, info *TableInfo, schema string) ([]string, er
 		}
 		valueList := make([]string, len(cols))
 		for i, v := range vals {
-			valueList[i] = sqlLiteral(v)
+			valueList[i] = SQLLiteral(v, colTypes[cols[i]])
 		}
 		stmts = append(stmts, fmt.Sprintf(
 			`INSERT INTO %s (%s) VALUES (%s) ON CONFLICT DO NOTHING;`,
@@ -345,23 +349,4 @@ func quotedIdents(ss []string) []string {
 		out[i] = quoteIdent(s)
 	}
 	return out
-}
-
-func sqlLiteral(v interface{}) string {
-	if v == nil {
-		return "NULL"
-	}
-	switch val := v.(type) {
-	case []byte:
-		return fmt.Sprintf("'%s'", strings.ReplaceAll(string(val), "'", "''"))
-	case string:
-		return fmt.Sprintf("'%s'", strings.ReplaceAll(val, "'", "''"))
-	case bool:
-		if val {
-			return "TRUE"
-		}
-		return "FALSE"
-	default:
-		return fmt.Sprintf("%v", v)
-	}
 }

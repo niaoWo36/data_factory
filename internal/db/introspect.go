@@ -349,6 +349,32 @@ func quoteIdent(s string) string {
 	return `"` + strings.ReplaceAll(s, `"`, `""`) + `"`
 }
 
+// arrayElementTypes maps information_schema udt_name values for ARRAY columns
+// to their element type names.
+var arrayElementTypes = map[string]string{
+	"_text":        "text",
+	"_varchar":     "varchar",
+	"_bpchar":      "char",
+	"_int2":        "smallint",
+	"_int4":        "integer",
+	"_int8":        "bigint",
+	"_float4":      "real",
+	"_float8":      "double precision",
+	"_numeric":     "numeric",
+	"_bool":        "boolean",
+	"_date":        "date",
+	"_time":        "time",
+	"_timetz":      "time with time zone",
+	"_timestamp":   "timestamp",
+	"_timestamptz": "timestamptz",
+	"_interval":    "interval",
+	"_json":        "json",
+	"_jsonb":       "jsonb",
+	"_uuid":        "uuid",
+	"_bytea":       "bytea",
+	"_oid":         "oid",
+}
+
 func resolveType(dataType, udtName string, charLen, numPrec, numScale sql.NullInt64) string {
 	switch dataType {
 	case "character varying":
@@ -367,6 +393,12 @@ func resolveType(dataType, udtName string, charLen, numPrec, numScale sql.NullIn
 		}
 		return "numeric"
 	case "ARRAY":
+		if elem, ok := arrayElementTypes[udtName]; ok {
+			return elem + "[]"
+		}
+		if strings.HasPrefix(udtName, "_") && len(udtName) > 1 {
+			return "text[]"
+		}
 		return udtName // e.g. "_text" → keep as-is; caller can refine
 	case "USER-DEFINED":
 		return udtName

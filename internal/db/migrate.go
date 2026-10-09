@@ -134,6 +134,8 @@ func MigrateData(ctx context.Context, srcDB, dstDB *sql.DB, srcSchema, dstSchema
 	}
 	progress(Progress{Stage: "data", Message: fmt.Sprintf("Migrating data for %d tables (tenants: %v)", len(tables), tenantIDs), Total: len(tables)})
 
+	var failedTables []string
+
 	for i, table := range tables {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -149,6 +151,8 @@ func MigrateData(ctx context.Context, srcDB, dstDB *sql.DB, srcSchema, dstSchema
 
 		info, err := IntrospectTable(srcDB, srcSchema, table)
 		if err != nil {
+			failed := fmt.Sprintf("%s(introspect: %v)", table, err)
+			failedTables = append(failedTables, failed)
 			progress(Progress{Stage: "data", Table: table,
 				Message: fmt.Sprintf("⚠ Skipped (introspect failed): %v", err), Done: i + 1, Total: len(tables)})
 			continue
@@ -164,6 +168,7 @@ func MigrateData(ctx context.Context, srcDB, dstDB *sql.DB, srcSchema, dstSchema
 			dataErr = migrateDataCrossDB(ctx, srcDB, dstDB, info, srcSchema, dstSchema, effectiveTenants, progress)
 		}
 		if dataErr != nil {
+			failedTables = append(failedTables, fmt.Sprintf("%s(%v)", table, dataErr))
 			progress(Progress{Stage: "data", Table: table,
 				Message: fmt.Sprintf("⚠ Skipped data for %s: %v", table, dataErr), Done: i + 1, Total: len(tables)})
 			continue
@@ -172,6 +177,16 @@ func MigrateData(ctx context.Context, srcDB, dstDB *sql.DB, srcSchema, dstSchema
 			Message: fmt.Sprintf("Table %s done", table), Done: i + 1, Total: len(tables)})
 	}
 
+	if seqFailed := syncSequenceValues(ctx, srcDB, dstDB, srcSchema, dstSchema, progress); len(seqFailed) > 0 {
+		failedTables = append(failedTables, seqFailed...)
+	}
+
+	if len(failedTables) > 0 {
+		progress(Progress{Stage: "data",
+			Message: fmt.Sprintf("Data migration complete with %d failures: %s", len(failedTables), strings.Join(failedTables, "; ")),
+			Done:    len(tables), Total: len(tables)})
+		return fmt.Errorf("data migration incomplete (%d failed): %s", len(failedTables), strings.Join(failedTables, "; "))
+	}
 	progress(Progress{Stage: "data", Message: "Data migration complete", Done: len(tables), Total: len(tables)})
 	return nil
 }
@@ -190,9 +205,9 @@ func migrateDataSameDB(ctx context.Context, db *sql.DB, info *TableInfo,
 		filterMsg = fmt.Sprintf("Filtering tenant rows: %v", tenantIDs)
 		progress(Progress{Stage: "data", Table: info.Name, Message: filterMsg})
 		q = fmt.Sprintf(
-			`INSERT INTO %s (%s) SELECT %s FROM %s WHERE tenant_id::text = ANY($1::text[]) ON CONFLICT DO NOTHING`,
-			dst, colList, colList, src)
-		res, err := db.ExecContext(ctx, q, pq.Array(tenantIDs))
+			`INSERT INTO %s (%s) SELECT %s FROM %s WHERE %s ON CONFLICT DO NOTHING`,
+			dst, colList, colList, src, TenantFilterClause)
+		res, err := db.ExecContext(ctx, q, TenantFilterArgs(info.Name, tenantIDs))
 		if err != nil {
 			return err
 		}
@@ -228,8 +243,8 @@ func migrateDataCrossDB(ctx context.Context, srcDB, dstDB *sql.DB, info *TableIn
 	if info.HasTenantID && len(tenantIDs) > 0 {
 		progress(Progress{Stage: "data", Table: info.Name,
 			Message: fmt.Sprintf("Filtering tenant rows: %v", tenantIDs)})
-		selectQ = fmt.Sprintf(`SELECT %s FROM %s WHERE tenant_id::text = ANY($1::text[])`, colList, src)
-		args = []interface{}{pq.Array(tenantIDs)}
+		selectQ = fmt.Sprintf(`SELECT %s FROM %s WHERE %s`, colList, src, TenantFilterClause)
+		args = []interface{}{TenantFilterArgs(info.Name, tenantIDs)}
 	} else {
 		progress(Progress{Stage: "data", Table: info.Name, Message: "Copying all rows"})
 		selectQ = fmt.Sprintf(`SELECT %s FROM %s`, colList, src)
@@ -257,24 +272,32 @@ func migrateDataCrossDB(ctx context.Context, srcDB, dstDB *sql.DB, info *TableIn
 		if err != nil {
 			return err
 		}
+		committed := false
+		defer func() {
+			if !committed {
+				tx.Rollback()
+			}
+		}()
 		stmt, err := tx.PrepareContext(ctx, insertQ)
 		if err != nil {
-			tx.Rollback()
 			return err
 		}
 		defer stmt.Close()
 		for _, row := range rowBuf {
 			res, err := stmt.ExecContext(ctx, row...)
 			if err != nil {
-				tx.Rollback()
 				return fmt.Errorf("insert into %s: %w", info.Name, err)
 			}
 			if affected, rowsErr := res.RowsAffected(); rowsErr == nil {
 				insertedTotal += int(affected)
 			}
 		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("commit %s batch (%d rows): %w", info.Name, len(rowBuf), err)
+		}
+		committed = true
 		rowBuf = rowBuf[:0]
-		return tx.Commit()
+		return nil
 	}
 
 	vals := make([]interface{}, len(cols))
@@ -315,6 +338,37 @@ func migrateDataCrossDB(ctx context.Context, srcDB, dstDB *sql.DB, info *TableIn
 
 // --- helpers ---
 
+// syncSequenceValues copies sequence last_value/is_called from source to
+// destination so that subsequent inserts on the target do not reuse existing
+// keys (which would then be swallowed by ON CONFLICT DO NOTHING and look like
+// lost new data). Returns descriptions of sequences that could not be synced.
+func syncSequenceValues(ctx context.Context, srcDB, dstDB *sql.DB, srcSchema, dstSchema string, progress ProgressFunc) []string {
+	seqs, err := ListSequences(srcDB, srcSchema)
+	if err != nil {
+		return []string{fmt.Sprintf("sequences(list: %v)", err)}
+	}
+	var failed []string
+	for _, seq := range seqs {
+		var lastVal int64
+		var isCalled bool
+		q := fmt.Sprintf(`SELECT last_value, is_called FROM %s.%s`, quoteIdent(srcSchema), quoteIdent(seq.Name))
+		if err := srcDB.QueryRowContext(ctx, q).Scan(&lastVal, &isCalled); err != nil {
+			failed = append(failed, fmt.Sprintf("%s(read: %v)", seq.Name, err))
+			continue
+		}
+		setQ := fmt.Sprintf(`SELECT setval('%s.%s', $1, $2)`,
+			strings.ReplaceAll(dstSchema, `'`, `''`), strings.ReplaceAll(seq.Name, `'`, `''`))
+		if _, err := dstDB.ExecContext(ctx, setQ, lastVal, isCalled); err != nil {
+			failed = append(failed, fmt.Sprintf("%s(setval: %v)", seq.Name, err))
+			continue
+		}
+	}
+	if len(seqs) > 0 && len(failed) == 0 {
+		progress(Progress{Stage: "data", Message: fmt.Sprintf("Synced %d sequence values", len(seqs))})
+	}
+	return failed
+}
+
 func columnList(cols []Column) string {
 	names := make([]string, len(cols))
 	for i, c := range cols {
@@ -331,8 +385,8 @@ func makePlaceholders(n int) string {
 	return strings.Join(parts, ", ")
 }
 
-// tenantArray returns a pq.Array value suitable for use in
-// WHERE tenant_id::text = ANY($1) queries.
+// tenantArray returns a pq.Array value suitable for tenant-filter queries.
+// Kept for compatibility; new code should use TenantFilterArgs.
 func tenantArray(ids []string) interface{} {
 	return pq.Array(ids)
 }

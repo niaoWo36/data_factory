@@ -9,6 +9,15 @@ import (
 	_ "github.com/lib/pq"
 )
 
+// quoteConnStr escapes a value for libpq keyword/value connection strings.
+// Values containing spaces, quotes, backslashes or empty strings must be
+// single-quoted; backslash and single-quote are escaped with a backslash.
+func quoteConnStr(s string) string {
+	r := strings.ReplaceAll(s, `\`, `\\`)
+	r = strings.ReplaceAll(r, `'`, `\'`)
+	return "'" + r + "'"
+}
+
 // DSN builds a libpq connection string from a DBConfig.
 func DSN(cfg config.DBConfig) string {
 	sslmode := cfg.SSLMode
@@ -21,12 +30,15 @@ func DSN(cfg config.DBConfig) string {
 	}
 	return fmt.Sprintf(
 		"host=%s port=%d dbname=%s user=%s password=%s sslmode=%s search_path=%s",
-		cfg.Host, cfg.Port, cfg.DBName, cfg.User, cfg.Password, sslmode, schema,
+		quoteConnStr(cfg.Host), cfg.Port, quoteConnStr(cfg.DBName), quoteConnStr(cfg.User), quoteConnStr(cfg.Password), quoteConnStr(sslmode), quoteConnStr(schema),
 	)
 }
 
 // Open returns a *sql.DB for the given config, verifying connectivity.
 func Open(cfg config.DBConfig) (*sql.DB, error) {
+	if cfg.User == "" {
+		return nil, fmt.Errorf("ping %s:%d/%s: 用户名为空，请填写 user 后再测试", cfg.Host, cfg.Port, cfg.DBName)
+	}
 	db, err := sql.Open("postgres", DSN(cfg))
 	if err != nil {
 		return nil, fmt.Errorf("open: %w", err)

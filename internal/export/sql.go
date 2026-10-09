@@ -8,7 +8,6 @@ import (
 
 	"data_factory/internal/config"
 	"data_factory/internal/db"
-	"github.com/lib/pq"
 )
 
 // GenerateSQL generates a SQL migration script and writes it to a string.
@@ -43,15 +42,31 @@ func GenerateSQL(
 	dstSchema := db.SchemaOf(cfg.DstMain)
 	srcTSSchema := db.SchemaOf(cfg.SrcTS)
 	dstTSSchema := db.SchemaOf(cfg.DstTS)
+	var failedTables []string
 
 	if includeMain {
-		if err := writeMainDDL(&sb, srcMainDB, srcSchema, dstSchema); err != nil {
+		if err := writeMainDDL(&sb, srcMainDB, srcSchema, dstSchema, &failedTables); err != nil {
 			return "", err
 		}
 		if includeData {
-			if err := writeMainData(&sb, srcMainDB, srcSchema, dstSchema, tenantIDs); err != nil {
+			if err := writeMainData(&sb, srcMainDB, srcSchema, dstSchema, tenantIDs, &failedTables); err != nil {
 				return "", err
 			}
+		}
+		seqStmts, seqFailed := sequenceSetvalStmts(srcMainDB, srcSchema, dstSchema)
+		if len(seqStmts) > 0 {
+			sb.WriteString("-- Sequence values\n")
+			for _, s := range seqStmts {
+				sb.WriteString(s)
+				sb.WriteString("\n")
+			}
+			sb.WriteString("\n")
+		}
+		if len(seqFailed) > 0 {
+			for _, f := range seqFailed {
+				sb.WriteString(fmt.Sprintf("-- WARNING: %s\n", f))
+			}
+			failedTables = append(failedTables, seqFailed...)
 		}
 	}
 
@@ -72,10 +87,15 @@ func GenerateSQL(
 		}
 	}
 
+	if len(failedTables) > 0 {
+		sb.WriteString(fmt.Sprintf("-- WARNING: %d table(s) skipped during export: %s\n\n",
+			len(failedTables), strings.Join(failedTables, "; ")))
+	}
+
 	return sb.String(), nil
 }
 
-func writeMainDDL(sb *strings.Builder, srcDB *sql.DB, srcSchema, dstSchema string) error {
+func writeMainDDL(sb *strings.Builder, srcDB *sql.DB, srcSchema, dstSchema string, failedTables *[]string) error {
 	sb.WriteString("-- ---------------------------------------------------------------\n")
 	sb.WriteString("-- MAIN DATABASE – TABLE STRUCTURES\n")
 	sb.WriteString("-- ---------------------------------------------------------------\n\n")
@@ -124,7 +144,9 @@ func writeMainDDL(sb *strings.Builder, srcDB *sql.DB, srcSchema, dstSchema strin
 	for _, t := range tables {
 		info, err := db.IntrospectTable(srcDB, srcSchema, t)
 		if err != nil {
-			return fmt.Errorf("introspect %s: %w", t, err)
+			sb.WriteString(fmt.Sprintf("-- WARNING: skipped DDL for %s (introspect failed): %v\n\n", quoteIdent(t), err))
+			*failedTables = append(*failedTables, fmt.Sprintf("%s(introspect: %v)", t, err))
+			continue
 		}
 		allInfos = append(allInfos, info)
 		ddl := db.CreateTableDDL(info, dstSchema)
@@ -155,7 +177,7 @@ func writeMainDDL(sb *strings.Builder, srcDB *sql.DB, srcSchema, dstSchema strin
 	return nil
 }
 
-func writeMainData(sb *strings.Builder, srcDB *sql.DB, srcSchema, dstSchema string, tenantIDs []string) error {
+func writeMainData(sb *strings.Builder, srcDB *sql.DB, srcSchema, dstSchema string, tenantIDs []string, failedTables *[]string) error {
 	sb.WriteString("-- ---------------------------------------------------------------\n")
 	sb.WriteString("-- MAIN DATABASE – DATA\n")
 	sb.WriteString("-- ---------------------------------------------------------------\n\n")
@@ -173,7 +195,9 @@ func writeMainData(sb *strings.Builder, srcDB *sql.DB, srcSchema, dstSchema stri
 
 		info, err := db.IntrospectTable(srcDB, srcSchema, table)
 		if err != nil {
-			return err
+			sb.WriteString(fmt.Sprintf("-- WARNING: skipped data for %s (introspect failed): %v\n", quoteIdent(table), err))
+			*failedTables = append(*failedTables, fmt.Sprintf("%s(introspect: %v)", table, err))
+			continue
 		}
 		colList := columnNames(info.Columns)
 		src := fmt.Sprintf("%s.%s", quoteIdent(srcSchema), quoteIdent(table))
@@ -185,18 +209,22 @@ func writeMainData(sb *strings.Builder, srcDB *sql.DB, srcSchema, dstSchema stri
 		var rows *sql.Rows
 		if info.HasTenantID && len(effectiveTenants) > 0 {
 			rows, err = srcDB.Query(
-				fmt.Sprintf(`SELECT %s FROM %s WHERE tenant_id::text = ANY($1::text[]) ORDER BY 1`, colList, src),
-				pq.Array(effectiveTenants))
+				fmt.Sprintf(`SELECT %s FROM %s WHERE %s`, colList, src, db.TenantFilterClause),
+				db.TenantFilterArgs(table, tenantIDs))
 		} else {
-			rows, err = srcDB.Query(fmt.Sprintf(`SELECT %s FROM %s ORDER BY 1`, colList, src))
+			rows, err = srcDB.Query(fmt.Sprintf(`SELECT %s FROM %s`, colList, src))
 		}
 		if err != nil {
-			return fmt.Errorf("select %s: %w", table, err)
+			sb.WriteString(fmt.Sprintf("-- WARNING: skipped data for %s (select failed): %v\n", quoteIdent(table), err))
+			*failedTables = append(*failedTables, fmt.Sprintf("%s(select: %v)", table, err))
+			continue
 		}
 
 		if err := writeInserts(sb, rows, info, dst); err != nil {
 			rows.Close()
-			return err
+			sb.WriteString(fmt.Sprintf("-- WARNING: skipped data for %s (export failed): %v\n", quoteIdent(table), err))
+			*failedTables = append(*failedTables, fmt.Sprintf("%s(export: %v)", table, err))
+			continue
 		}
 		rows.Close()
 	}
@@ -252,6 +280,7 @@ func writeInserts(sb *strings.Builder, rows *sql.Rows, info *db.TableInfo, dst s
 		return err
 	}
 	colList := strings.Join(quotedIdents(cols), ", ")
+	colTypes := columnTypesByName(info.Columns)
 
 	vals := make([]interface{}, len(cols))
 	ptrs := make([]interface{}, len(cols))
@@ -265,7 +294,7 @@ func writeInserts(sb *strings.Builder, rows *sql.Rows, info *db.TableInfo, dst s
 		}
 		valueList := make([]string, len(cols))
 		for i, v := range vals {
-			valueList[i] = sqlLiteral(v)
+			valueList[i] = db.SQLLiteral(v, colTypes[cols[i]])
 		}
 		sb.WriteString(fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s) ON CONFLICT DO NOTHING;\n",
 			dst, colList, strings.Join(valueList, ", ")))
@@ -295,21 +324,36 @@ func quotedIdents(ss []string) []string {
 	return out
 }
 
-func sqlLiteral(v interface{}) string {
-	if v == nil {
-		return "NULL"
+func columnTypesByName(cols []db.Column) map[string]string {
+	m := make(map[string]string, len(cols))
+	for _, c := range cols {
+		m[c.Name] = c.DataType
 	}
-	switch val := v.(type) {
-	case []byte:
-		return fmt.Sprintf("'%s'", strings.ReplaceAll(string(val), "'", "''"))
-	case string:
-		return fmt.Sprintf("'%s'", strings.ReplaceAll(val, "'", "''"))
-	case bool:
-		if val {
-			return "TRUE"
+	return m
+}
+
+// sequenceSetvalStmts emits SELECT setval(...) statements so that sequence
+// last_value/is_called survive an export/restore cycle. Without them the
+// restored sequences restart at their definition START and new inserts collide
+// with migrated keys (silently swallowed by ON CONFLICT DO NOTHING).
+func sequenceSetvalStmts(srcDB *sql.DB, srcSchema, dstSchema string) ([]string, []string) {
+	seqs, err := db.ListSequences(srcDB, srcSchema)
+	if err != nil {
+		return nil, []string{fmt.Sprintf("sequences(list: %v)", err)}
+	}
+	var stmts []string
+	var failed []string
+	for _, seq := range seqs {
+		var lastVal int64
+		var isCalled bool
+		q := fmt.Sprintf(`SELECT last_value, is_called FROM %s.%s`, quoteIdent(srcSchema), quoteIdent(seq.Name))
+		if err := srcDB.QueryRow(q).Scan(&lastVal, &isCalled); err != nil {
+			failed = append(failed, fmt.Sprintf("%s(read: %v)", seq.Name, err))
+			continue
 		}
-		return "FALSE"
-	default:
-		return fmt.Sprintf("%v", v)
+		stmts = append(stmts, fmt.Sprintf(`SELECT setval('%s.%s', %d, %v);`,
+			strings.ReplaceAll(dstSchema, `'`, `''`), strings.ReplaceAll(seq.Name, `'`, `''`),
+			lastVal, isCalled))
 	}
+	return stmts, failed
 }
