@@ -101,12 +101,19 @@ document.addEventListener('DOMContentLoaded', () => {
 
   document.getElementById('btnTenantNext').addEventListener('click', () => {
     const selected = getSelectedTenants();
-    if (selected.length === 0) {
+    const cfg = window.AppState.config;
+    const exportOnly = !!(cfg && cfg.export_only);
+    if (selected.length === 0 && !exportOnly) {
       alert('请至少选择一个租户');
       return;
     }
     persistTenantSelection(selected);
-    unlockStep(3);
-    goToStep(3);
+    if (exportOnly) {
+      unlockStep(5);
+      goToStep(5);
+    } else {
+      unlockStep(3);
+      goToStep(3);
+    }
   });
 });

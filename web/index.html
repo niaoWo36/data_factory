@@ -72,9 +72,13 @@
             <i class="bi bi-server me-1"></i>目标主数据库
           </div>
           <div class="card-body">
-            <div class="form-check form-switch mb-2">
+            <div class="form-check form-switch mb-2" id="sameDbRow">
               <input class="form-check-input" type="checkbox" id="sameDbSwitch" />
               <label class="form-check-label" for="sameDbSwitch">与源库相同（跨 Schema 迁移）</label>
+            </div>
+            <div class="form-check form-switch mb-2">
+              <input class="form-check-input" type="checkbox" id="exportOnlySwitch" />
+              <label class="form-check-label" for="exportOnlySwitch">仅导出源库脚本（无需目标数据库）</label>
             </div>
             <div id="dstMainForm"></div>
           </div>
@@ -82,7 +86,7 @@
       </div>
 
       <!-- Dest TS -->
-      <div class="col-md-6">
+      <div class="col-md-6" id="dstTSCol">
         <div class="card h-100">
           <div class="card-header bg-warning text-dark py-2">
             <i class="bi bi-clock-history me-1"></i>目标时序库（TimescaleDB）
@@ -203,6 +207,10 @@
   <!-- ═══════════ STEP 5 – SQL Export ═══════════ -->
   <div class="step-panel d-none" id="step5">
     <h5 class="mb-3"><i class="bi bi-file-earmark-code-fill me-2 text-primary"></i>SQL 导出</h5>
+
+    <div class="alert alert-info py-2 small d-none" id="expModeNote">
+      <i class="bi bi-info-circle-fill me-1"></i>当前为<strong>仅导出源库脚本</strong>模式：不需要目标数据库，脚本使用源库 Schema 名称。
+    </div>
 
     <div class="card mb-3">
       <div class="card-body">

@@ -7,7 +7,7 @@ type DBConfig struct {
 	DBName   string `json:"dbname"`
 	User     string `json:"user"`
 	Password string `json:"password"`
-	Schema   string `json:"schema"` // defaults to "public"
+	Schema   string `json:"schema"`  // defaults to "public"
 	SSLMode  string `json:"sslmode"` // disable | require | verify-full
 }
 
@@ -29,22 +29,27 @@ type AppConfig struct {
 	// SameDB indicates that source and destination share the same server instance.
 	// Detected automatically by comparing host/port/dbname of SrcMain and DstMain.
 	SameDB bool `json:"same_db"`
+
+	// ExportOnly means there is no destination database. SQL export generates a
+	// self-contained script of the source database (using source schema names);
+	// migration is disabled in this mode.
+	ExportOnly bool `json:"export_only"`
 }
 
 // MigrateOptions carries per-request migration flags sent from the UI.
 type MigrateOptions struct {
-	Config     AppConfig `json:"config"`
-	TenantIDs  []string  `json:"tenant_ids"`
-	MigrateSchema     bool `json:"migrate_schema"`
-	MigrateData       bool `json:"migrate_data"`
-	MigrateTimeSeries bool `json:"migrate_time_series"`
+	Config            AppConfig `json:"config"`
+	TenantIDs         []string  `json:"tenant_ids"`
+	MigrateSchema     bool      `json:"migrate_schema"`
+	MigrateData       bool      `json:"migrate_data"`
+	MigrateTimeSeries bool      `json:"migrate_time_series"`
 }
 
 // ExportOptions carries per-request SQL export flags sent from the UI.
 type ExportOptions struct {
-	Config        AppConfig `json:"config"`
-	TenantIDs     []string  `json:"tenant_ids"`
-	IncludeMain   bool      `json:"include_main"`
-	IncludeTS     bool      `json:"include_ts"`
-	IncludeData   bool      `json:"include_data"` // false = DDL only
+	Config      AppConfig `json:"config"`
+	TenantIDs   []string  `json:"tenant_ids"`
+	IncludeMain bool      `json:"include_main"`
+	IncludeTS   bool      `json:"include_ts"`
+	IncludeData bool      `json:"include_data"` // false = DDL only
 }

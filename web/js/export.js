@@ -7,7 +7,11 @@ function syncExportTenantList() {
   const container = document.getElementById('expTenantList');
   const tenantIDs = window.AppState.tenantIDs || [];
   if (tenantIDs.length === 0) {
-    container.innerHTML = '<span class="text-muted small">请先完成第2步租户选择</span>';
+    const sw = document.getElementById('exportOnlySwitch');
+    const exportOnly = sw ? sw.checked : !!(window.AppState.config && window.AppState.config.export_only);
+    container.innerHTML = exportOnly
+      ? '<span class="text-muted small">未选择租户 → 导出全部数据</span>'
+      : '<span class="text-muted small">请先完成第2步租户选择</span>';
     return;
   }
 
@@ -24,7 +28,20 @@ function getExportTenants() {
   return Array.from(document.querySelectorAll('.exp-tenant-cb:checked')).map(cb => cb.value);
 }
 
+// Show the export-only hint when the app runs without a target database.
+function syncExportModeNote() {
+  const note = document.getElementById('expModeNote');
+  if (!note) return;
+  const sw = document.getElementById('exportOnlySwitch');
+  const cfg = window.AppState.config;
+  const exportOnly = sw ? sw.checked : !!(cfg && cfg.export_only);
+  note.classList.toggle('d-none', !exportOnly);
+}
+
 document.addEventListener('DOMContentLoaded', () => {
+  syncExportModeNote();
+  window.addEventListener('df:config-changed', syncExportModeNote);
+
   // Toggle tenant section visibility based on DDL-only option.
   document.querySelectorAll('input[name="expDataOpt"]').forEach(el => {
     el.addEventListener('change', () => {
@@ -34,7 +51,11 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   document.getElementById('btnExport').addEventListener('click', async () => {
-    const cfg = window.AppState.config;
+    let cfg = window.AppState.config;
+    if (!cfg && typeof buildConfig === 'function') {
+      // Not saved yet — use the values currently entered in step 1.
+      cfg = buildConfig();
+    }
     if (!cfg) { alert('请先完成连接配置'); goToStep(1); return; }
 
     const includeData = document.getElementById('expDDLData').checked;

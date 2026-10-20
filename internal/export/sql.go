@@ -72,17 +72,19 @@ func GenerateSQL(
 
 	if includeTS {
 		tsTables, err := db.GetTSTables(mainDB, srcSchema, tenantIDs)
-		if err != nil {
-			return "", fmt.Errorf("get ts tables: %w", err)
-		}
-		if len(tsTables) > 0 {
+		switch {
+		case err != nil:
+			// The time-series registry table may be absent (e.g. a plain database
+			// dumped without the IoT registry) — warn instead of failing the export.
+			sb.WriteString(fmt.Sprintf("-- WARNING: could not read time-series tables: %v\n\n", err))
+		case len(tsTables) > 0:
 			if err := writeTSDDL(&sb, srcTSDB, srcTSSchema, dstTSSchema, tsTables); err != nil {
 				return "", err
 			}
 			if includeData {
 				sb.WriteString("-- Time-series data export skipped: TS migration/export only includes table structures.\n\n")
 			}
-		} else {
+		default:
 			sb.WriteString("-- No time-series tables found for selected tenants.\n")
 		}
 	}

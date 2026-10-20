@@ -5,6 +5,10 @@
 const LS_CONFIG_KEY = 'df_config';
 const LS_SAMEDB_KEY = 'df_same_db';
 
+// Target (destination) config as last seen, so switching export-only mode on
+// and off does not lose what the user already typed.
+let lastDstConfig = null;
+
 // ── Form builder ──────────────────────────────────────────────
 function dbFormHTML(id, { showFull = true, schemaOnly = false } = {}) {
   if (schemaOnly) {
@@ -72,6 +76,12 @@ function populateDB(id, cfg) {
 
 // ── Render forms ───────────────────────────────────────────────
 function renderForms(sameDB) {
+  const exportOnly = !!document.getElementById('exportOnlySwitch') && document.getElementById('exportOnlySwitch').checked;
+  const dstTSCol   = document.getElementById('dstTSCol');
+  const sameDbRow = document.getElementById('sameDbRow');
+  if (dstTSCol) dstTSCol.style.display = exportOnly ? 'none' : '';
+  if (sameDbRow) sameDbRow.style.display = exportOnly ? 'none' : '';
+
   const isFirstRender = !document.getElementById('srcMain_host');
 
   if (isFirstRender) {
@@ -85,6 +95,10 @@ function renderForms(sameDB) {
   document.getElementById('dstMainForm').innerHTML = sameDB
     ? dbFormHTML('dstMain', { showFull: false, schemaOnly: true })
     : dbFormHTML('dstMain');
+  if (exportOnly) {
+    document.getElementById('dstMainForm').innerHTML =
+      '<p class="text-muted small mb-0">仅导出源库脚本模式：无需配置目标数据库，导出脚本使用源库 Schema 名称。</p>';
+  }
 
   // Restore values from AppState (already snapshotted before this call on toggle,
   // or loaded from server/localStorage on initial render)
@@ -110,24 +124,33 @@ function renderForms(sameDB) {
 
 // ── Build config object from forms ────────────────────────────
 function buildConfig() {
+  const exportOnly = document.getElementById('exportOnlySwitch').checked;
   const sameDB  = document.getElementById('sameDbSwitch').checked;
   const srcTS   = readDBConfig('srcTS', true);
-  const dstTS   = readDBConfig('dstTS', true); // always schema-only
   const srcMain = readDBConfig('srcMain');
 
-  let dstMain;
-  if (sameDB) {
+  let dstMain, dstTS;
+  if (exportOnly) {
+    // No target database in this mode — keep whatever target config was stored
+    // so it survives a round-trip through export-only mode.
+    const saved = window.AppState.config || {};
+    dstMain = saved.dst_main ? { ...saved.dst_main } : {};
+    dstTS   = saved.dst_ts   ? { ...saved.dst_ts }   : {};
+  } else if (sameDB) {
     dstMain = { ...srcMain, schema: readDBConfig('dstMain', true).schema };
+    dstTS   = readDBConfig('dstTS', true);
   } else {
     dstMain = readDBConfig('dstMain');
+    dstTS   = readDBConfig('dstTS', true);
   }
 
   return {
-    src_main: srcMain,
-    src_ts:   srcTS,
-    dst_main: dstMain,
-    dst_ts:   dstTS,
-    same_db:  sameDB,
+    src_main:    srcMain,
+    src_ts:      srcTS,
+    dst_main:    dstMain,
+    dst_ts:      dstTS,
+    same_db:     sameDB,
+    export_only: exportOnly,
   };
 }
 
@@ -192,18 +215,32 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   if (savedCfg) {
     window.AppState.config = savedCfg;
+    lastDstConfig = {
+      dst_main: savedCfg.dst_main || {},
+      dst_ts:   savedCfg.dst_ts   || {},
+    };
+    window.dispatchEvent(new CustomEvent('df:config-changed'));
   }
 
   const savedSameDB = savedCfg ? !!savedCfg.same_db : (localStorage.getItem(LS_SAMEDB_KEY) === '1');
+  const savedExportOnly = savedCfg ? !!savedCfg.export_only : false;
   const sameSwitch = document.getElementById('sameDbSwitch');
+  const exportOnlySwitch = document.getElementById('exportOnlySwitch');
   sameSwitch.checked = savedSameDB;
+  if (exportOnlySwitch) exportOnlySwitch.checked = savedExportOnly;
+  sameSwitch.disabled = savedExportOnly;
 
   renderForms(savedSameDB);
 
   // If we have a saved config, unlock steps and restore last step
   if (savedCfg) {
-    unlockStep(2); unlockStep(3); unlockStep(4); unlockStep(5);
-    const lastStep = parseInt(localStorage.getItem('df_step') || '1', 10);
+    if (savedExportOnly) {
+      unlockStep(2); unlockStep(5); lockStep(3); lockStep(4);
+    } else {
+      unlockStep(2); unlockStep(3); unlockStep(4); unlockStep(5);
+    }
+    let lastStep = parseInt(localStorage.getItem('df_step') || '1', 10);
+    if (savedExportOnly && lastStep !== 1 && lastStep !== 2 && lastStep !== 5) lastStep = 2;
     if (lastStep > 1) {
       goToStep(lastStep);
       if (lastStep >= 2) loadTenants();
@@ -220,11 +257,50 @@ document.addEventListener('DOMContentLoaded', async () => {
       dst_main: readDBConfig('dstMain', prevSameDB),
       dst_ts:   readDBConfig('dstTS', true),
       same_db:  this.checked,
+      export_only: exportOnlySwitch ? exportOnlySwitch.checked : false,
     };
     window.AppState.config = snap;
     try { localStorage.setItem(LS_CONFIG_KEY, JSON.stringify(snap)); } catch (_) {}
     renderForms(this.checked);
   });
+
+  // Export-only toggle
+  if (exportOnlySwitch) {
+    exportOnlySwitch.addEventListener('change', function () {
+      const exportOnly = this.checked;
+      sameSwitch.disabled = exportOnly;
+
+      const snap = window.AppState.config ? JSON.parse(JSON.stringify(window.AppState.config)) : {};
+      try { snap.src_main = readDBConfig('srcMain'); } catch (_) {}
+      try { snap.src_ts   = readDBConfig('srcTS', true); } catch (_) {}
+      snap.same_db    = sameSwitch.checked;
+      snap.export_only = exportOnly;
+
+      // Capture the target values currently in the form before it is re-rendered.
+      // In export-only mode the form is replaced by a note, so there is nothing to capture.
+      if (document.getElementById('dstMain_host')) {
+        lastDstConfig = {
+          dst_main: readDBConfig('dstMain', sameSwitch.checked),
+          dst_ts:   readDBConfig('dstTS', true),
+        };
+      }
+      if (lastDstConfig) {
+        snap.dst_main = lastDstConfig.dst_main;
+        snap.dst_ts   = lastDstConfig.dst_ts;
+      }
+
+      window.AppState.config = snap;
+      try { localStorage.setItem(LS_CONFIG_KEY, JSON.stringify(snap)); } catch (_) {}
+      renderForms(sameSwitch.checked);
+      window.dispatchEvent(new CustomEvent('df:config-changed'));
+
+      if (exportOnly) {
+        unlockStep(2); unlockStep(5); lockStep(3); lockStep(4);
+      } else {
+        unlockStep(2); unlockStep(3); unlockStep(4); unlockStep(5);
+      }
+    });
+  }
 
   // Test connection
   document.getElementById('btnTestConn').addEventListener('click', async () => {
@@ -262,7 +338,12 @@ document.addEventListener('DOMContentLoaded', async () => {
       cfg.same_db = data.same_db;
       window.AppState.config = cfg;
       localStorage.setItem(LS_CONFIG_KEY, JSON.stringify(cfg));
-      unlockStep(2); unlockStep(3); unlockStep(4); unlockStep(5);
+      window.dispatchEvent(new CustomEvent('df:config-changed'));
+      if (cfg.export_only) {
+        unlockStep(2); unlockStep(5); lockStep(3); lockStep(4);
+      } else {
+        unlockStep(2); unlockStep(3); unlockStep(4); unlockStep(5);
+      }
       goToStep(2);
       loadTenants();
     } catch (e) {

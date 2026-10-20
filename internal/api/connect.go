@@ -47,25 +47,27 @@ func (s *Server) handleTestConnection(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Test destination main DB.
-	if cfg.DstMain.Host != "" || (cfg.SameDB && cfg.DstMain.Schema != "") {
-		conn, err := db.OpenDstMain(cfg)
-		if err != nil {
-			results["dst_main"] = map[string]interface{}{"ok": false, "error": err.Error()}
-		} else {
-			conn.Close()
-			results["dst_main"] = map[string]interface{}{"ok": true}
+	if !cfg.ExportOnly {
+		// Test destination main DB.
+		if cfg.DstMain.Host != "" || (cfg.SameDB && cfg.DstMain.Schema != "") {
+			conn, err := db.OpenDstMain(cfg)
+			if err != nil {
+				results["dst_main"] = map[string]interface{}{"ok": false, "error": err.Error()}
+			} else {
+				conn.Close()
+				results["dst_main"] = map[string]interface{}{"ok": true}
+			}
 		}
-	}
 
-	// Test destination TS DB (always shares DstMain server, different schema).
-	if cfg.DstTS.Schema != "" {
-		conn, err := db.OpenDstTS(cfg)
-		if err != nil {
-			results["dst_ts"] = map[string]interface{}{"ok": false, "error": err.Error()}
-		} else {
-			conn.Close()
-			results["dst_ts"] = map[string]interface{}{"ok": true}
+		// Test destination TS DB (always shares DstMain server, different schema).
+		if cfg.DstTS.Schema != "" {
+			conn, err := db.OpenDstTS(cfg)
+			if err != nil {
+				results["dst_ts"] = map[string]interface{}{"ok": false, "error": err.Error()}
+			} else {
+				conn.Close()
+				results["dst_ts"] = map[string]interface{}{"ok": true}
+			}
 		}
 	}
 
@@ -80,7 +82,11 @@ func (s *Server) handleSaveConfig(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid body: "+err.Error())
 		return
 	}
-	cfg.SameDB = db.IsSameDB(cfg)
+	if !cfg.ExportOnly {
+		// Detect same-database flag automatically. In export-only mode there is no
+		// target database to compare against, so the UI preference is kept.
+		cfg.SameDB = db.IsSameDB(cfg)
+	}
 
 	s.mu.Lock()
 	s.session = &cfg

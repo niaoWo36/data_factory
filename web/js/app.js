@@ -19,6 +19,8 @@ function goToStep(n) {
     btn.classList.toggle('active', s === n);
   });
 
+  if (typeof syncExportTenantList === 'function') syncExportTenantList();
+
   try { localStorage.setItem('df_step', n); } catch (_) {}
 }
 
@@ -40,6 +42,11 @@ document.addEventListener('DOMContentLoaded', () => {
 function unlockStep(n) {
   const btn = document.querySelector(`.step-btn[data-step="${n}"]`);
   if (btn) btn.disabled = false;
+}
+
+function lockStep(n) {
+  const btn = document.querySelector(`.step-btn[data-step="${n}"]`);
+  if (btn) btn.disabled = true;
 }
 
 // ── Utility ───────────────────────────────────────────────────

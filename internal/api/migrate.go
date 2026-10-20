@@ -33,6 +33,10 @@ func (s *Server) handleMigrateStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	opts.Config.SameDB = db.IsSameDB(opts.Config)
+	if opts.Config.ExportOnly {
+		writeError(w, http.StatusBadRequest, "仅导出模式未配置目标数据库，无法执行迁移")
+		return
+	}
 
 	taskID := fmt.Sprintf("task_%d_%s", atomic.AddInt64(&taskCounter, 1), timestamp())
 	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Hour)

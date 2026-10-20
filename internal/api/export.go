@@ -24,7 +24,13 @@ func (s *Server) handleExportSQL(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid body: "+err.Error())
 		return
 	}
-	opts.Config.SameDB = db.IsSameDB(opts.Config)
+	if opts.Config.ExportOnly {
+		opts.Config.SameDB = true
+		opts.Config.DstMain = opts.Config.SrcMain
+		opts.Config.DstTS = opts.Config.SrcTS
+	} else {
+		opts.Config.SameDB = db.IsSameDB(opts.Config)
+	}
 	cfg := opts.Config
 
 	// Open connections only when needed.
